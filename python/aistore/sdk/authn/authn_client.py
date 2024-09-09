@@ -3,7 +3,7 @@
 #
 
 import logging
-from typing import Optional, Tuple, Union
+from typing import Optional, Union, Tuple
 from urllib3 import Retry
 from aistore.sdk.request_client import RequestClient
 from aistore.sdk.const import (
