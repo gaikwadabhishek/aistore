@@ -25,6 +25,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Link Checker
+        id: lychee
+        uses: lycheeverse/lychee-action@v1
+
       - name: Install `golangci-lint`
         uses: golangci/golangci-lint-action@v3
         with:
