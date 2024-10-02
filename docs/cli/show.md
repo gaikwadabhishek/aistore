@@ -9,7 +9,27 @@ redirect_from:
 
 # `ais show` command
 
-AIS CLI `show` command can universally be used to view summaries and details on a cluster and its nodes, buckets and objects, running and finished jobs - in short, _all_ managed entities (see below). The command is a "hub" for all information-viewing commands that are currently supported.
+AIS CLI `show` command can universally be used to view summaries and details on a cluster and its nodes, buckets and objects, running and finished jobs - in short, _all_ managed entities (see below).
+
+The command is a "hub" for all information-viewing commands that are currently supported:
+
+```console
+$ ais show --help
+
+COMMANDS:
+   auth            show entity in authn
+   object          show object properties
+   bucket          show bucket properties
+   cluster         main dashboard: show cluster at-a-glance (nodes, software versions, utilization, capacity, memory and more)
+   performance     show performance counters, throughput, latency, disks, used/available capacities (press <TAB-TAB> to select specific view)
+   storage         show storage usage and utilization, disks and mountpaths
+   rebalance       show rebalance status and stats
+   config          show CLI, cluster, or node configurations (nodes inherit cluster and have local)
+   remote-cluster  show attached AIS clusters
+   job             show running and finished jobs ('--all' for all, or press <TAB-TAB> to select, '--help' for more options)
+   log             for a given node: show its current log (use '--refresh' to update, '--help' for details)
+   tls             show TLS certificate: version, issuer's common name, from/to validity bounds
+```
 
 For easy usage, all `show` commands have been aliased to their respective top-level counterparts:
 
@@ -35,8 +55,9 @@ As far as `ais show`, the command currently extends as follows:
 
 ```console
 $ ais show <TAB-TAB>
+
 auth             bucket           performance      rebalance        remote-cluster   log
-object           cluster          storage          config           job
+object           cluster          storage          config           job              tls
 ```
 
 In other words, there are currently 11 subcommands that are briefly described in the rest of this text.
@@ -306,9 +327,9 @@ qVJt8087         g15     rebalance       694             1.02MiB         13:40:5
 - [CLI: `dsort` (distributed shuffle)](/docs/cli/dsort.md)
 - [CLI: `download` from any remote source](/docs/cli/download.md)
 - [built-in `rebalance`](/docs/rebalance.md)
-- [multi-object operations](/docs/cli/object.md#operations-on-lists-and-ranges)
+- [multi-object operations](/docs/cli/object.md#operations-on-lists-and-ranges-and-entire-buckets)
 - [reading, writing, and listing archives](/docs/cli/object.md)
-- [copying buckets](/docs/cli/bucket.md#copy-bucket)
+- [copying buckets](/docs/cli/bucket.md#copy-list-range-andor-prefix-selected-objects-or-entire-in-cluster-or-remote-buckets)
 
 ## `ais show cluster`
 

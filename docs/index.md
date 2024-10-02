@@ -185,14 +185,14 @@ Since AIS natively supports [remote backends](/docs/providers.md), you can also 
   - [eXtended Actions (xactions)](https://github.com/NVIDIA/aistore/blob/main/xact/README.md)
   - [CLI: `ais job`](/docs/cli/job.md) and [`ais show job`](/docs/cli/show.md), including:
     - [prefetch remote datasets](/docs/cli/object.md#prefetch-objects)
-    - [copy bucket](/docs/cli/bucket.md#copy-bucket)
-    - [copy multiple objects](/docs/cli/bucket.md#copy-multiple-objects)
+    - [copy (list, range, and/or prefix) selected objects or entire (in-cluster or remote) buckets](/docs/cli/bucket.md#copy-list-range-andor-prefix-selected-objects-or-entire-in-cluster-or-remote-buckets)
     - [download remote BLOBs](/docs/cli/blob-downloader.md)
     - [promote NFS or SMB share](https://aistore.nvidia.com/blog/2022/03/17/promote)
 - Assorted Topics
   - [Virtual directories](/docs/howto_virt_dirs.md)
   - [System files](/docs/sysfiles.md)
   - [HTTPS: loading, reloading, and generating certificates; switching cluster between HTTP and HTTPS](/docs/https.md)
+    - [Managing TLS Certificates](/docs/cli/x509.md)
   - [Feature flags](/docs/feature_flags.md)
   - [`aisnode` command line](/docs/command_line.md)
   - [Traffic patterns](/docs/traffic_patterns.md)

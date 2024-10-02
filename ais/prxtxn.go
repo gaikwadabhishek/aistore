@@ -18,6 +18,7 @@ import (
 	"github.com/NVIDIA/aistore/cmn"
 	"github.com/NVIDIA/aistore/cmn/cos"
 	"github.com/NVIDIA/aistore/cmn/debug"
+	"github.com/NVIDIA/aistore/cmn/mono"
 	"github.com/NVIDIA/aistore/cmn/nlog"
 	"github.com/NVIDIA/aistore/core"
 	"github.com/NVIDIA/aistore/core/meta"
@@ -376,6 +377,12 @@ func (p *proxy) setBprops(msg *apc.ActMsg, bck *meta.Bck, nprops *cmn.Bprops) (s
 	}
 	bck.Props = bprops
 
+	if nprops.EC.Enabled && cmn.Rom.EcStreams() > 0 {
+		if err := p._onEC(mono.NanoTime()); err != nil {
+			return "", err
+		}
+	}
+
 	// 2. begin
 	switch msg.Action {
 	case apc.ActSetBprops:
@@ -639,7 +646,7 @@ func (p *proxy) tcb(bckFrom, bckTo *meta.Bck, msg *apc.ActMsg, dryRun bool) (xid
 }
 
 // transform or copy a list or a range of objects
-func (p *proxy) tcobjs(bckFrom, bckTo *meta.Bck, config *cmn.Config, msg *apc.ActMsg, tcomsg *cmn.TCObjsMsg) (string, error) {
+func (p *proxy) tcobjs(bckFrom, bckTo *meta.Bck, config *cmn.Config, msg *apc.ActMsg, tcomsg *cmn.TCOMsg) (string, error) {
 	// 1. prep
 	var (
 		_, existsTo = p.owner.bmd.get().Get(bckTo) // cleanup on fail: destroy if created

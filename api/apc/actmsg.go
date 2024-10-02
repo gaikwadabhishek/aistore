@@ -143,12 +143,17 @@ const (
 	NodeDecommission = "decommission"
 )
 
+const (
+	ActEcOpen  = "open-ec-streams"
+	ActEcClose = "close-ec-streams"
+)
+
 // ActMsg is a JSON-formatted control structures used in a majority of API calls
 type (
 	ActMsg struct {
 		Value  any    `json:"value"`  // action-specific and optional
 		Action string `json:"action"` // ActShutdown, ActRebalance, and many more (see apc/const.go)
-		Name   string `json:"name"`   // action-specific name (e.g., bucket name)
+		Name   string `json:"name"`   // action-specific info of any kind (not necessarily "name")
 	}
 	ActValRmNode struct {
 		DaemonID          string `json:"sid"`

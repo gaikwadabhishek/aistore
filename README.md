@@ -26,14 +26,15 @@ AIS [consistently shows balanced I/O distribution and linear scalability](https:
 * **Batch jobs**. APIs and CLI to start, stop, and monitor documented [batch operations](/docs/batch.md), such as `prefetch`, `download`, copy or transform datasets, and many more.
 
 For easy usage, management, and monitoring, there's also:
-* **Integrated and powerful [CLI](/docs/cli.md)**. As of early 2024, top-level CLI commands include:
+* **Integrated easy-to-use [CLI](/docs/cli.md)**, with top-level commands including:
 ```console
-$ ais
+$ ais <TAB-TAB>
 
-bucket        etl         help           log              create        dsort        stop         blob-download
-object        job         advanced       performance      download      evict        cp           rmo
-cluster       auth        storage        remote-cluster   prefetch      get          rmb          wait
-config        show        archive        alias            put           ls           start        search
+bucket           job              storage          remote-cluster   prefetch         evict            create
+object           auth             archive          alias            put              rmo              dsort
+cluster          show             log              ls               start            wait             search
+config           help             tls              stop             get              blob-download
+etl              advanced         performance      download         rmb              cp
 ```
 
 AIS runs natively on Kubernetes and features open format - thus, the freedom to copy or move your data from AIS at any time using the familiar Linux `tar(1)`, `scp(1)`, `rsync(1)` and similar.
@@ -186,14 +187,14 @@ Since AIS natively supports [remote backends](/docs/providers.md), you can also 
   - [eXtended Actions (xactions)](https://github.com/NVIDIA/aistore/blob/main/xact/README.md)
   - [CLI: `ais job`](/docs/cli/job.md) and [`ais show job`](/docs/cli/show.md), including:
     - [prefetch remote datasets](/docs/cli/object.md#prefetch-objects)
-    - [copy bucket](/docs/cli/bucket.md#copy-bucket)
-    - [copy multiple objects](/docs/cli/bucket.md#copy-multiple-objects)
+    - [copy (list, range, and/or prefix) selected objects or entire (in-cluster or remote) buckets](/docs/cli/bucket.md#copy-list-range-andor-prefix-selected-objects-or-entire-in-cluster-or-remote-buckets)
     - [download remote BLOBs](/docs/cli/blob-downloader.md)
     - [promote NFS or SMB share](https://aistore.nvidia.com/blog/2022/03/17/promote)
 - Assorted Topics
   - [Virtual directories](/docs/howto_virt_dirs.md)
   - [System files](/docs/sysfiles.md)
   - [HTTPS: loading, reloading, and generating certificates; switching cluster between HTTP and HTTPS](/docs/https.md)
+    - [Managing TLS Certificates](/docs/cli/x509.md)
   - [Feature flags](/docs/feature_flags.md)
   - [`aisnode` command line](/docs/command_line.md)
   - [Traffic patterns](/docs/traffic_patterns.md)

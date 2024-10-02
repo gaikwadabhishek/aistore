@@ -25,6 +25,7 @@ import (
 	"github.com/NVIDIA/aistore/cmn/prob"
 	"github.com/NVIDIA/aistore/core"
 	"github.com/NVIDIA/aistore/core/meta"
+	"github.com/NVIDIA/aistore/ec"
 	"github.com/NVIDIA/aistore/fs"
 	"github.com/NVIDIA/aistore/transport"
 	"github.com/NVIDIA/aistore/transport/bundle"
@@ -185,7 +186,7 @@ func (reb *Reb) RunRebalance(smap *meta.Smap, id int64, notif *xact.NotifXact, t
 	reb.mu.Unlock()
 
 	logHdr := reb.logHdr(id, smap, true /*initializing*/)
-	nlog.Infoln(logHdr + ": initializing")
+	nlog.Infoln(logHdr, "initializing")
 
 	bmd := core.T.Bowner().Get()
 	rargs := &rebArgs{id: id, smap: smap, config: cmn.GCO.Get(), ecUsed: bmd.IsECUsed()}
@@ -221,6 +222,9 @@ func (reb *Reb) RunRebalance(smap *meta.Smap, id int64, notif *xact.NotifXact, t
 
 	// At this point, only one rebalance is running
 
+	if rargs.ecUsed {
+		ec.ECM.OpenStreams(true /*with refc*/)
+	}
 	onGFN()
 
 	tstats.SetFlag(cos.NodeAlerts, cos.Rebalancing)
@@ -242,6 +246,11 @@ func (reb *Reb) RunRebalance(smap *meta.Smap, id int64, notif *xact.NotifXact, t
 	tstats.ClrFlag(cos.NodeAlerts, cos.Rebalancing)
 
 	offGFN()
+	if rargs.ecUsed {
+		// rebalance can open EC streams; it has has no authority, however, to close them - primary has
+		// that's why all we do here is decrement ref-count back to what it was before this run
+		ec.ECM.CloseStreams(true /*just refc*/)
+	}
 }
 
 // To optimize goroutine creation:

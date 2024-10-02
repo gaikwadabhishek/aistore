@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch, mock_open
 from requests import Response
 from requests.structures import CaseInsensitiveDict
 
+from aistore.sdk.blob_download_config import BlobDownloadConfig
 from aistore.sdk.const import (
     HTTP_METHOD_HEAD,
     DEFAULT_CHUNK_SIZE,
@@ -33,16 +34,15 @@ from aistore.sdk.const import (
     AIS_MIRROR_COPIES,
     AIS_PRESENT,
 )
-from aistore.sdk.object import Object
-from aistore.sdk.object_reader import ObjectReader
-from aistore.sdk.archive_mode import ArchiveMode
-from aistore.sdk.object_props import ObjectProps
+from aistore.sdk.obj.object import Object
+from aistore.sdk.obj.object_client import ObjectClient
+from aistore.sdk.obj.object_reader import ObjectReader
+from aistore.sdk.archive_config import ArchiveMode, ArchiveConfig
+from aistore.sdk.obj.object_props import ObjectProps
 from aistore.sdk.types import (
     ActionMsg,
     BlobMsg,
     PromoteAPIArgs,
-    ArchiveSettings,
-    BlobDownloadSettings,
     BucketEntry,
 )
 from tests.const import SMALL_FILE_SIZE, ETL_NAME
@@ -52,7 +52,7 @@ OBJ_NAME = "object_name"
 REQUEST_PATH = f"{URL_PATH_OBJECTS}/{BCK_NAME}/{OBJ_NAME}"
 
 
-# pylint: disable=unused-variable, too-many-locals, too-many-public-methods
+# pylint: disable=unused-variable, too-many-locals, too-many-public-methods, no-value-for-parameter
 class TestObject(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_client = Mock()
@@ -88,17 +88,17 @@ class TestObject(unittest.TestCase):
         self.expected_params[QPARAM_ARCHREGX] = ""
         self.expected_params[QPARAM_ARCHMODE] = None
         self.expected_params[QPARAM_ETL_NAME] = ETL_NAME
-        archive_settings = ArchiveSettings(archpath=archpath_param)
-        blob_download_settings = BlobDownloadSettings(
+        archive_config = ArchiveConfig(archpath=archpath_param)
+        blob_config = BlobDownloadConfig(
             chunk_size=chunk_size,
             num_workers=num_workers,
         )
         self.get_exec_assert(
-            archive_settings=archive_settings,
+            archive_config=archive_config,
             chunk_size=3,
             etl_name=ETL_NAME,
             writer=self.mock_writer,
-            blob_download_settings=blob_download_settings,
+            blob_download_config=blob_config,
         )
 
     def test_get_archregex(self):
@@ -107,39 +107,51 @@ class TestObject(unittest.TestCase):
         self.expected_params[QPARAM_ARCHPATH] = ""
         self.expected_params[QPARAM_ARCHREGX] = regex
         self.expected_params[QPARAM_ARCHMODE] = mode.value
-        archive_settings = ArchiveSettings(regex=regex, mode=mode)
-        self.get_exec_assert(archive_settings=archive_settings)
+        archive_config = ArchiveConfig(regex=regex, mode=mode)
+        self.get_exec_assert(archive_config=archive_config)
 
-    def get_exec_assert(self, **kwargs):
-        with patch(
-            "aistore.sdk.object.ObjectReader", return_value=Mock(spec=ObjectReader)
-        ) as mock_obj_reader:
-            res = self.object.get(**kwargs)
+    @patch("aistore.sdk.obj.object.ObjectReader")
+    @patch("aistore.sdk.obj.object.ObjectClient")
+    def get_exec_assert(self, mock_obj_client, mock_obj_reader, **kwargs):
+        mock_obj_client_instance = Mock(spec=ObjectClient)
+        mock_obj_client.return_value = mock_obj_client_instance
+        mock_obj_reader.return_value = Mock(spec=ObjectReader)
 
-            blob_download_settings = kwargs.get(
-                "blob_download_settings", BlobDownloadSettings()
-            )
-            blob_chunk_size = blob_download_settings.chunk_size
-            blob_workers = blob_download_settings.num_workers
-            expected_headers = kwargs.get("expected_headers", {})
-            if blob_chunk_size or blob_workers:
-                expected_headers[HEADER_OBJECT_BLOB_DOWNLOAD] = "true"
-            if blob_chunk_size:
-                expected_headers[HEADER_OBJECT_BLOB_CHUNK_SIZE] = blob_chunk_size
-            if blob_workers:
-                expected_headers[HEADER_OBJECT_BLOB_WORKERS] = blob_workers
-            expected_chunk_size = kwargs.get("chunk_size", DEFAULT_CHUNK_SIZE)
+        res = self.object.get(**kwargs)
 
-            self.assertIsInstance(res, ObjectReader)
-            mock_obj_reader.assert_called_with(
-                client=self.mock_client,
-                path=REQUEST_PATH,
-                params=self.expected_params,
-                headers=expected_headers,
-                chunk_size=expected_chunk_size,
-            )
-            if "writer" in kwargs:
-                self.mock_writer.writelines.assert_called_with(res)
+        blob_config = kwargs.get("blob_download_config", BlobDownloadConfig())
+        initial_headers = kwargs.get("expected_headers", {})
+        expected_headers = self.get_expected_headers(initial_headers, blob_config)
+
+        expected_chunk_size = kwargs.get("chunk_size", DEFAULT_CHUNK_SIZE)
+
+        self.assertIsInstance(res, ObjectReader)
+
+        mock_obj_client.assert_called_with(
+            request_client=self.mock_client,
+            path=REQUEST_PATH,
+            params=self.expected_params,
+            headers=expected_headers,
+        )
+        mock_obj_reader.assert_called_with(
+            object_client=mock_obj_client_instance,
+            chunk_size=expected_chunk_size,
+        )
+        if "writer" in kwargs:
+            self.mock_writer.writelines.assert_called_with(res)
+
+    @staticmethod
+    def get_expected_headers(initial_headers, blob_config):
+        expected_headers = initial_headers
+        blob_chunk_size = blob_config.chunk_size
+        blob_workers = blob_config.num_workers
+        if blob_chunk_size or blob_workers:
+            expected_headers[HEADER_OBJECT_BLOB_DOWNLOAD] = "true"
+        if blob_chunk_size:
+            expected_headers[HEADER_OBJECT_BLOB_CHUNK_SIZE] = blob_chunk_size
+        if blob_workers:
+            expected_headers[HEADER_OBJECT_BLOB_WORKERS] = blob_workers
+        return expected_headers
 
     def test_get_url(self):
         expected_res = "full url"

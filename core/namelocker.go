@@ -67,7 +67,7 @@ const (
 
 func newNameLocker() (nl nameLocker) {
 	nl = make(nameLocker, cos.MultiSyncMapCount)
-	for idx := range len(nl) {
+	for idx := range nl {
 		nl[idx].init()
 	}
 	return
@@ -180,6 +180,11 @@ func (nlc *nlc) UpgradeLock(uname string) bool {
 		nlc.mu.Unlock()
 		return false
 	}
+
+	//
+	// TODO -- FIXME: consider removing this part, simplifying `wcond` out, returning EBUSY instead..
+	//
+
 	if li.wcond == nil {
 		li.wcond = sync.NewCond(&nlc.mu)
 	}

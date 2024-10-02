@@ -446,7 +446,9 @@ func (lom *LOM) _checkBucket(bmd *meta.BMD) (err error) {
 		}
 		return cmn.NewErrBckNotFound(bck.Bucket())
 	}
-	if lom.bid() != bprops.BID { // TODO -- FIXME: 52 bits
+	// TODO -- FIXME: lom.bid() is 52 bits, bprops.BID is not
+	// (see core/meta/bid.go)
+	if lom.bid() != bprops.BID {
 		err = cmn.NewErrObjDefunct(lom.String(), lom.bid(), bprops.BID)
 	}
 	return err
@@ -613,7 +615,7 @@ func (lom *LOM) isLockedExcl() (exclusive bool) {
 	return exclusive
 }
 
-func (lom *LOM) isLockedRW() (locked bool) {
+func (lom *LOM) isLockedRW() bool {
 	nlc := lom.getLocker()
 	rc, exclusive := nlc.IsLocked(lom.Uname())
 	return exclusive || rc > 0

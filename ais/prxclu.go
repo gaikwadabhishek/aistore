@@ -383,7 +383,7 @@ func (p *proxy) httpclupost(w http.ResponseWriter, r *http.Request) {
 
 	switch apiOp {
 	case apc.Keepalive:
-		// fast path(?)
+		// fast path
 		if len(apiItems) > 1 {
 			p.fastKaliveRsp(w, r, smap, config, apiItems[1] /*sid*/)
 			return
@@ -1597,6 +1597,7 @@ func (p *proxy) _rebPostRm(ctx *smapModifier, clone *smapX) {
 }
 
 func (p *proxy) stopMaintenance(w http.ResponseWriter, r *http.Request, msg *apc.ActMsg) {
+	const tag = "stop-maintenance:"
 	var (
 		opts apc.ActValRmNode
 		smap = p.owner.smap.get()
@@ -1612,31 +1613,41 @@ func (p *proxy) stopMaintenance(w http.ResponseWriter, r *http.Request, msg *apc
 		return
 	}
 
-	nlog.Infof("%s: %s(%s) opts=%v", p, msg.Action, si.StringEx(), opts)
+	sname := si.StringEx()
+	pname := p.String()
+	nlog.Infoln(tag, pname, "[", msg.Action, sname, opts, "]")
 
 	if !smap.InMaint(si) {
 		p.writeErrf(w, r, "node %s is not in maintenance mode - nothing to do", si.StringEx())
 		return
 	}
-	timeout := cmn.GCO.Get().Timeout.CplaneOperation.D()
-	if _, status, err := p.reqHealth(si, timeout, nil, smap); err != nil {
-		sleep, retries := timeout/2, 5
+	tout := cmn.Rom.CplaneOperation()
+	if _, status, err := p.reqHealth(si, tout, nil, smap, false /*retry pub-addr*/); err != nil {
+		// TODO -- FIXME: use cmn.KeepaliveRetryDuration()
+		sleep, retries := tout/2, 4
+
 		time.Sleep(sleep)
-		for range retries { // retry
+		for i := range retries { // retry
 			time.Sleep(sleep)
-			_, status, err = p.reqHealth(si, timeout, nil, smap)
+			_, status, err = p.reqHealth(si, tout, nil, smap, true /*retry pub-addr*/)
 			if err == nil {
+				if i == 1 {
+					nlog.Infoln(tag, pname, "=>", sname, "OK after 1 attempt [", msg.Action, opts, "]")
+				} else {
+					nlog.Infoln(tag, pname, "=>", sname, "OK after", i, "attempts [", msg.Action, opts, "]")
+				}
 				break
 			}
 			if status != http.StatusServiceUnavailable {
-				p.writeErrf(w, r, "%s is unreachable: %v(%d)", si, err, status)
+				p.writeErrf(w, r, "%s is unreachable: %v(%d)", sname, err, status)
 				return
 			}
+			sleep = min(sleep+time.Second, tout)
 		}
 		if err != nil {
 			debug.Assert(status == http.StatusServiceUnavailable)
 			nlog.Errorf("%s: node %s takes unusually long time to start: %v(%d) - proceeding anyway",
-				p.si, si, err, status)
+				pname, sname, err, status)
 		}
 	}
 
@@ -2258,32 +2269,4 @@ func mustRebalance(ctx *smapModifier, cur *smapX) bool {
 		}
 	}
 	return false
-}
-
-//
-// (EC is active) and (is EC active?) via fastKalive
-//
-
-// default config.Timeout.EcStreams
-const (
-	ecTimeout = 10 * time.Minute
-)
-
-func isActiveEC(hdr http.Header) (ok bool) {
-	_, ok = hdr[apc.HdrActiveEC]
-	return ok
-}
-
-// (target send => primary)
-func (p *proxy) _recvActiveEC(rhdr http.Header, now int64) {
-	if isActiveEC(rhdr) {
-		p.lastEC.Store(now)
-	}
-}
-
-// (primary resp => non-primary)
-func (p *proxy) _respActiveEC(whdr http.Header, now int64) {
-	if time.Duration(now-p.lastEC.Load()) < ecTimeout {
-		whdr.Set(apc.HdrActiveEC, "true")
-	}
 }

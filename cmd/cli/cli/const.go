@@ -5,7 +5,6 @@
 package cli
 
 import (
-	"strings"
 	"time"
 
 	"github.com/NVIDIA/aistore/api/apc"
@@ -18,19 +17,20 @@ import (
 
 // top-level commands (categories - nouns)
 const (
-	commandAuth     = "auth"
 	commandAdvanced = "advanced"
+	commandAlias    = "alias"
+	commandArch     = "archive"
+	commandAuth     = "auth"
 	commandBucket   = "bucket"
-	commandObject   = "object"
 	commandCluster  = "cluster"
 	commandConfig   = "config"
+	commandETL      = apc.ETL
 	commandJob      = "job"
 	commandLog      = "log"
+	commandObject   = "object"
 	commandPerf     = "performance"
 	commandStorage  = "storage"
-	commandETL      = apc.ETL   // TODO: add `ais show etl`
-	commandAlias    = "alias"   // TODO: ditto alias
-	commandArch     = "archive" // TODO: ditto archive
+	commandTLS      = "tls"
 
 	commandSearch = "search"
 )
@@ -132,7 +132,8 @@ const (
 	cmdBackendEnable  = "enable-backend"
 	cmdBackendDisable = "disable-backend"
 
-	cmdLoadX509 = "load-X.509"
+	cmdLoadTLS     = "load-certificate"
+	cmdValidateTLS = "validate-certificates"
 
 	// Node subcommands
 	cmdJoin                = "join"
@@ -217,10 +218,20 @@ const (
 	tabHelpDet = "press <TAB-TAB> to select, '--help' for details"
 )
 
+// indentation
+const (
+	indent1 = "   "
+	indent2 = "      "       // repeat(indent1, 2)
+	indent4 = "            " // repeat(indent1, 4)
+)
+
+const (
+	archFormats = ".tar, .tgz or .tar.gz, .zip, .tar.lz4" // namely, archive.FileExtensions
+	archExts    = "(" + archFormats + ")"
+)
+
 // `ArgsUsage`: argument placeholders in help messages
 const (
-	indent1 = "   " // indent4 et al.
-
 	// Job IDs (download, dsort)
 	jobIDArgument                 = "JOB_ID"
 	optionalJobIDArgument         = "[JOB_ID]"
@@ -353,12 +364,6 @@ const (
 //
 
 var (
-	indent2 = strings.Repeat(indent1, 2)
-	indent4 = strings.Repeat(indent1, 4)
-
-	archFormats = ".tar, .tgz or .tar.gz, .zip, .tar.lz4" // namely, archive.FileExtensions
-	archExts    = "(" + archFormats + ")"
-
 	//
 	// scope 'all'
 	//
@@ -678,11 +683,6 @@ var (
 		Name:  "cleanup",
 		Usage: "remove old bucket and create it again (warning: removes the entire content of the old bucket)",
 	}
-	concurrencyFlag = cli.IntFlag{
-		Name:  "conc",
-		Value: 10,
-		Usage: "limits number of concurrent put requests and number of concurrent shards created",
-	}
 
 	// waiting
 	waitPodReadyTimeoutFlag = DurationFlag{
@@ -835,19 +835,48 @@ var (
 		Usage: "utilize built-in blob-downloader (and the corresponding alternative datapath) to read very large remote objects",
 	}
 
-	numWorkersFlag = cli.IntFlag{
+	// num-workers
+	numBlobWorkersFlag = cli.IntFlag{
 		Name:  "num-workers",
 		Usage: "number of concurrent blob-downloading workers (readers); system default when omitted or zero",
 	}
 
+	noWorkers = indent4 + "\tuse (-1) to indicate single-threaded serial execution (ie., no workers);\n"
+
+	numListRangeWorkersFlag = cli.IntFlag{
+		Name: numBlobWorkersFlag.Name,
+		Usage: "number of concurrent workers (readers); defaults to a number of target mountpaths if omitted or zero;\n" +
+			noWorkers +
+			indent4 + "\tany positive value will be adjusted _not_ to exceed the number of target CPUs",
+	}
+	numGenShardWorkersFlag = cli.IntFlag{
+		Name:  numBlobWorkersFlag.Name,
+		Value: 10,
+		Usage: "limits the number of shards created concurrently",
+	}
+	numPutWorkersFlag = cli.IntFlag{
+		Name:  numBlobWorkersFlag.Name,
+		Value: 10,
+		Usage: "number of concurrent client-side workers (to execute PUT or append requests);\n" +
+			noWorkers +
+			indent4 + "\tany positive value will be adjusted _not_ to exceed twice the number of client CPUs",
+	}
+
+	// validate
 	cksumFlag = cli.BoolFlag{Name: "checksum", Usage: "validate checksum"}
 
+	// ais put
 	putObjCksumText     = indent4 + "\tand provide it as part of the PUT request for subsequent validation on the server side"
 	putObjCksumFlags    = initPutObjCksumFlags()
 	putObjDfltCksumFlag = cli.BoolFlag{
 		Name: "compute-checksum",
 		Usage: "[end-to-end protection] compute client-side checksum configured for the destination bucket\n" +
 			putObjCksumText,
+	}
+	putRetriesFlag = cli.IntFlag{
+		Name:  "retries",
+		Value: 1,
+		Usage: "when failing to PUT retry the operation up to so many times (with increasing timeout if timed out)",
 	}
 
 	appendConcatFlag = cli.BoolFlag{
@@ -916,9 +945,13 @@ var (
 		Name:  "include-src-bck",
 		Usage: "prefix the names of archived files with the source bucket name",
 	}
-	inclSrcDirNameFlag = cli.BoolFlag{
+	archSrcDirNameFlag = cli.BoolFlag{
 		Name:  "include-src-dir",
-		Usage: "prefix the names of archived files with the (root) source directory (omitted by default)",
+		Usage: "prefix the names of archived files with the (root) source directory",
+	}
+	putSrcDirNameFlag = cli.BoolFlag{
+		Name:  "include-src-dir",
+		Usage: "prefix destination object names with the source directory",
 	}
 	// 'ais archive put': conditional APPEND
 	archAppendOrPutFlag = cli.BoolFlag{

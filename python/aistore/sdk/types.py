@@ -4,7 +4,6 @@
 
 from __future__ import annotations  # pylint: disable=unused-variable
 import base64
-from dataclasses import dataclass
 from typing import Any, Mapping, List, Optional, Dict
 
 import msgspec
@@ -14,9 +13,8 @@ from pydantic import BaseModel, Field, validator
 from requests.structures import CaseInsensitiveDict
 
 from aistore.sdk.namespace import Namespace
-from aistore.sdk.archive_mode import ArchiveMode
 from aistore.sdk.list_object_flag import ListObjectFlag
-from aistore.sdk.object_props import ObjectProps
+from aistore.sdk.obj.object_props import ObjectProps
 from aistore.sdk.const import (
     HEADER_CONTENT_LENGTH,
     AIS_CHECKSUM_VALUE,
@@ -29,7 +27,7 @@ from aistore.sdk.const import (
 )
 
 
-# pylint: disable=too-few-public-methods,unused-variable,missing-function-docstring
+# pylint: disable=too-few-public-methods,unused-variable,missing-function-docstring,too-many-lines
 
 
 class ActionMsg(BaseModel):
@@ -516,6 +514,7 @@ class PrefetchMsg(BaseModel):
     continue_on_err: bool
     latest: bool
     blob_threshold: int = None
+    num_workers: int = None
 
     def as_dict(self):
         dict_rep = self.object_selection
@@ -523,6 +522,8 @@ class PrefetchMsg(BaseModel):
         dict_rep["latest-ver"] = self.latest
         if self.blob_threshold:
             dict_rep["blob-threshold"] = self.blob_threshold
+        if self.num_workers:
+            dict_rep["num-workers"] = self.num_workers
         return dict_rep
 
 
@@ -535,6 +536,7 @@ class TCMultiObj(BaseModel):
     tc_msg: TCBckMsg = None
     continue_on_err: bool
     object_selection: Dict
+    num_workers: int = None
 
     def as_dict(self):
         dict_rep = self.object_selection
@@ -543,6 +545,8 @@ class TCMultiObj(BaseModel):
                 dict_rep[key] = val
         dict_rep["tobck"] = self.to_bck.as_dict()
         dict_rep["coer"] = self.continue_on_err
+        if self.num_workers:
+            dict_rep["num-workers"] = self.num_workers
         return dict_rep
 
 
@@ -935,64 +939,3 @@ class ClusterPerformance:
             "latency": self.latency,
             "counters": self.counters,
         }
-
-
-@dataclass
-class ArchiveSettings:
-    """
-    Configuration for extracting files from an archive
-
-    Attributes:
-    archpath (str, optional): If the object is an archive, use `archpath` to extract a single file
-        from the archive
-    regex (str, optional): A prefix, suffix, WebDataset key, or general-purpose regular expression
-        used to match filenames within the archive and select possibly multiple files
-    mode (ArchiveMode, optional): Specifies the mode of archive extraction when using `regex`
-
-    Example:
-        # Extract a single file from an archive
-        single_file_settings = ArchiveSettings(
-            archpath="path/to/your/file.txt"
-        )
-
-        # Extract multiple files from an archive
-        multi_file_settings = ArchiveSettings(
-            regex = "log",  # Retrieve all log files from the archive
-            mode=ArchiveMode.SUFFIX,
-        )
-    """
-
-    archpath: str = ""
-    regex: str = ""
-    mode: ArchiveMode = None
-
-    def __post_init__(self):
-        if self.mode and not self.regex:
-            raise ValueError("Archive mode requires archive regex")
-
-        if self.regex and not self.mode:
-            raise ValueError("Archive regex requires archive mode")
-
-        if self.regex and self.archpath:
-            raise ValueError("Cannot use both Archive regex and Archive path")
-
-
-@dataclass
-class BlobDownloadSettings:
-    """
-    Configuration for downloading objects using a blob downloader
-
-    Attributes:
-        chunk_size (str, optional): Chunk size for the blob downloader. It can be specified in IEC
-            or SI units, or as raw bytes (e.g., "4mb", "1MiB", "1048576", "128k")
-        num_workers (str, optional): Number of concurrent workers for the blob downloader
-
-    Example:
-        blob_settings = BlobDownloadSettings(
-            chunk_size="1MiB",  # 1 MiB per chunk
-            num_workers="5"     # 5 concurrent download workers
-        )
-    """
-
-    chunk_size: str = None
-    num_workers: str = None

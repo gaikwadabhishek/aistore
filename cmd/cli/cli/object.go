@@ -106,7 +106,7 @@ func verbList(c *cli.Context, wop wop, fnames []string, bck cmn.Bck, appendPref 
 		recurs   = flagIsSet(c, recursFlag)
 	)
 	for _, n := range fnames {
-		fobjs, err := lsFobj(c, n, "", appendPref, &ndir, recurs, incl)
+		fobjs, err := lsFobj(n, "", appendPref, &ndir, recurs, incl, false)
 		if err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func verbRange(c *cli.Context, wop wop, pt *cos.ParsedTemplate, bck cmn.Bck, tri
 	)
 	pt.InitIter()
 	for n, hasNext := pt.Next(); hasNext; n, hasNext = pt.Next() {
-		fobjs, err := lsFobj(c, n, trimPref, appendPref, &ndir, recurs, incl)
+		fobjs, err := lsFobj(n, trimPref, appendPref, &ndir, recurs, incl, false)
 		if err != nil {
 			return err
 		}
@@ -147,7 +147,7 @@ func concatObject(c *cli.Context, bck cmn.Bck, objName string, fileNames []strin
 		recurs     = flagIsSet(c, recursFlag)
 	)
 	for i, fileName := range fileNames {
-		fobjs, err := lsFobj(c, fileName, "", "", &ndir, recurs, false /*incl src dir*/)
+		fobjs, err := lsFobj(fileName, "", "", &ndir, recurs, false /*incl src dir*/, false)
 		if err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ func calcPutRefresh(c *cli.Context) time.Duration {
 }
 
 // via `ais ls bucket/object` and `ais show bucket/object`
-func showObjProps(c *cli.Context, bck cmn.Bck, objName string) error {
+func showObjProps(c *cli.Context, bck cmn.Bck, objName string) (notfound bool, _ error) {
 	var (
 		propsFlag     []string
 		selectedProps []string
@@ -263,15 +263,16 @@ func showObjProps(c *cli.Context, bck cmn.Bck, objName string) error {
 		units, errU = parseUnitsFlag(c, unitsFlag)
 	)
 	if errU != nil {
-		return errU
+		return false, errU
 	}
 	if flagIsSet(c, objNotCachedPropsFlag) || flagIsSet(c, allObjsOrBcksFlag) {
 		hargs.FltPresence = apc.FltExists
 	}
 	objProps, err := api.HeadObject(apiBP, bck, objName, hargs)
 	if err != nil {
-		if !cmn.IsStatusNotFound(err) {
-			return err
+		notfound = cmn.IsStatusNotFound(err)
+		if !notfound {
+			return notfound, err
 		}
 		var hint string
 		if apc.IsFltPresent(hargs.FltPresence) && bck.IsRemote() {
@@ -281,7 +282,7 @@ func showObjProps(c *cli.Context, bck cmn.Bck, objName string) error {
 				hint = fmt.Sprintf(" (tip: try %s option)", qflprn(objNotCachedPropsFlag))
 			}
 		}
-		return fmt.Errorf("%q not found in %s%s", objName, bck.Cname(""), hint)
+		return notfound, fmt.Errorf("%q not found in %s%s", objName, bck.Cname(""), hint)
 	}
 
 	if flagIsSet(c, allPropsFlag) {
@@ -329,9 +330,9 @@ func showObjProps(c *cli.Context, bck cmn.Bck, objName string) error {
 	})
 
 	if flagIsSet(c, noHeaderFlag) {
-		return teb.Print(propNVs, teb.PropValTmplNoHdr)
+		return false, teb.Print(propNVs, teb.PropValTmplNoHdr)
 	}
-	return teb.Print(propNVs, teb.PropValTmpl)
+	return false, teb.Print(propNVs, teb.PropValTmpl)
 }
 
 func propVal(op *cmn.ObjectProps, name string) (v string) {

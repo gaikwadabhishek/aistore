@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,18 +31,19 @@ import (
 
 type (
 	uparams struct {
-		wop       wop
-		bck       cmn.Bck
-		fobjs     []fobj
-		workerCnt int
-		refresh   time.Duration
-		cksum     *cos.Cksum
-		cptn      string
-		totalSize int64
-		dryRun    bool
+		wop        wop
+		bck        cmn.Bck
+		fobjs      []fobj
+		numWorkers int
+		refresh    time.Duration
+		cksum      *cos.Cksum
+		cptn       string
+		totalSize  int64
+		dryRun     bool
 	}
 	uctx struct {
 		wg            cos.WG
+		errCh         chan string
 		errCount      atomic.Int32 // uploads failed so far
 		processedCnt  atomic.Int32 // files processed so far
 		processedSize atomic.Int64 // size of already processed files
@@ -100,18 +102,18 @@ func verbFobjs(c *cli.Context, wop wop, fobjs []fobj, bck cmn.Bck, ndir int, rec
 		}
 	}
 	refresh := calcPutRefresh(c)
-	numWorkers := parseIntFlag(c, concurrencyFlag)
-	debug.Assert(numWorkers > 0)
+	numWorkers := parseNumWorkersFlag(c, numPutWorkersFlag)
+
 	uparams := &uparams{
-		wop:       wop,
-		bck:       bck,
-		fobjs:     fobjs,
-		workerCnt: numWorkers,
-		refresh:   refresh,
-		cksum:     cksum,
-		cptn:      cptn,
-		totalSize: totalSize,
-		dryRun:    flagIsSet(c, dryRunFlag),
+		wop:        wop,
+		bck:        bck,
+		fobjs:      fobjs,
+		numWorkers: numWorkers,
+		refresh:    refresh,
+		cksum:      cksum,
+		cptn:       cptn,
+		totalSize:  totalSize,
+		dryRun:     flagIsSet(c, dryRunFlag),
 	}
 	return uparams.do(c)
 }
@@ -142,7 +144,7 @@ func (p *uparams) do(c *cli.Context) error {
 	u := &uctx{
 		verbose:      flagIsSet(c, verboseFlag),
 		showProgress: flagIsSet(c, progressFlag),
-		wg:           cos.NewLimitedWaitGroup(p.workerCnt, 0),
+		wg:           cos.NewLimitedWaitGroup(p.numWorkers, 0),
 		lastReport:   time.Now(),
 		reportEvery:  p.refresh,
 	}
@@ -165,18 +167,32 @@ func (p *uparams) do(c *cli.Context) error {
 		u.barSize = totalBars[1]
 	}
 
+	_ = parseRetriesFlag(c, putRetriesFlag, true) // to warn once, if need be
+
+	u.errCh = make(chan string, len(p.fobjs))
 	for _, fobj := range p.fobjs {
 		u.wg.Add(1) // cos.NewLimitedWaitGroup
 		go u.run(c, p, fobj)
 	}
 	u.wg.Wait()
 
+	close(u.errCh)
+
 	if u.showProgress {
 		u.progress.Wait()
 		fmt.Fprint(c.App.Writer, u.errSb.String())
 	}
 	if numFailed := u.errCount.Load(); numFailed > 0 {
-		return fmt.Errorf("failed to %s %d file%s", p.wop.verb(), numFailed, cos.Plural(int(numFailed)))
+		fn := fmt.Sprintf(".ais-%s-failures.%d.log", strings.ToLower(p.wop.verb()), os.Getpid())
+		fn = filepath.Join(os.TempDir(), fn)
+		fh, err := cos.CreateFile(fn)
+		if err == nil {
+			for failedPath := range u.errCh {
+				fmt.Fprintln(fh, failedPath)
+			}
+			fh.Close()
+		}
+		return fmt.Errorf("failed to %s %d file%s (%q)", p.wop.verb(), numFailed, cos.Plural(int(numFailed)), fn)
 	}
 	if !flagIsSet(c, dryRunFlag) {
 		if !flagIsSet(c, yesFlag) {
@@ -188,7 +204,7 @@ func (p *uparams) do(c *cli.Context) error {
 	return nil
 }
 
-func (p *uparams) _putOne(c *cli.Context, fobj fobj, reader cos.ReadOpenCloser, skipVC bool) (err error) {
+func (p *uparams) _putOne(c *cli.Context, fobj fobj, reader cos.ReadOpenCloser, skipVC, isTout bool) (err error) {
 	if p.dryRun {
 		fmt.Fprintf(c.App.Writer, "%s %s -> %s\n", p.wop.verb(), fobj.path, p.bck.Cname(fobj.dstName))
 		return
@@ -201,6 +217,9 @@ func (p *uparams) _putOne(c *cli.Context, fobj fobj, reader cos.ReadOpenCloser, 
 		Cksum:      p.cksum,
 		Size:       uint64(fobj.size),
 		SkipVC:     skipVC,
+	}
+	if isTout {
+		putArgs.BaseParams.Client.Timeout = longClientTimeout
 	}
 	_, err = api.PutObject(&putArgs)
 	return
@@ -305,11 +324,37 @@ func (u *uctx) do(c *cli.Context, p *uparams, fobj fobj, fh *cos.FileHandle, upd
 		err         error
 		skipVC      = flagIsSet(c, skipVerCksumFlag)
 		countReader = cos.NewCallbackReadOpenCloser(fh, updateBar /*progress callback*/)
+		iters       = 1
+		isTout      bool
 	)
+	iters += parseRetriesFlag(c, putRetriesFlag, false /*warn*/)
+
 	switch p.wop.verb() {
 	case "PUT":
-		err = p._putOne(c, fobj, countReader, skipVC)
+		for i := range iters {
+			err = p._putOne(c, fobj, countReader, skipVC, isTout)
+			if err == nil {
+				if i > 0 {
+					fmt.Fprintf(c.App.Writer, "[#%d] %s - done.\n", i+1, fobj.path)
+				}
+				break
+			}
+			e := stripErr(err)
+			if i < iters-1 {
+				s := fmt.Sprintf("[#%d] %s: %v - retrying...", i+1, fobj.path, e)
+				fmt.Fprintln(c.App.ErrWriter, s)
+				time.Sleep(time.Second)
+				ffh, errO := fh.Open()
+				if errO != nil {
+					fmt.Fprintf(c.App.ErrWriter, "failed to reopen %s: %v\n", fobj.path, errO)
+					break
+				}
+				countReader = cos.NewCallbackReadOpenCloser(ffh, updateBar /*progress callback*/)
+				isTout = isTimeout(e)
+			}
+		}
 	case "APPEND":
+		// TODO: retry as well
 		err = p._a2aOne(c, fobj, countReader, skipVC)
 	default:
 		debug.Assert(false, p.wop.verb()) // "ARCHIVE"
@@ -317,13 +362,15 @@ func (u *uctx) do(c *cli.Context, p *uparams, fobj fobj, fh *cos.FileHandle, upd
 		return
 	}
 	if err != nil {
-		str := fmt.Sprintf("Failed to %s %s: %v\n", p.wop.verb(), p.bck.Cname(fobj.dstName), err)
+		e := stripErr(err)
+		str := fmt.Sprintf("Failed to %s %s => %s: %v\n", p.wop.verb(), fobj.path, p.bck.Cname(fobj.dstName), e)
 		if u.showProgress {
 			u.errSb.WriteString(str)
 		} else {
-			fmt.Fprint(c.App.Writer, str)
+			fmt.Fprint(c.App.ErrWriter, str)
 		}
 		u.errCount.Inc()
+		u.errCh <- fobj.path
 	} else if u.verbose && !u.showProgress && !p.dryRun {
 		fmt.Fprintf(c.App.Writer, "%s -> %s\n", fobj.path, fobj.dstName) // needed?
 	}
@@ -391,10 +438,32 @@ func putRegular(c *cli.Context, bck cmn.Bck, objName, path string, finfo os.File
 		Cksum:      cksum,
 		SkipVC:     flagIsSet(c, skipVerCksumFlag),
 	}
-	_, err = api.PutObject(&putArgs)
+	iters := 1
+	iters += parseRetriesFlag(c, putRetriesFlag, true /*warn*/)
+
+	for i := range iters {
+		_, err = api.PutObject(&putArgs)
+		if err == nil {
+			if i > 0 {
+				fmt.Fprintf(c.App.Writer, "[#%d] %s - done.\n", i+1, path)
+			}
+			break
+		}
+		e := stripErr(err)
+		if i < iters-1 {
+			s := fmt.Sprintf("[#%d] %s: %v - retrying...", i+1, path, e)
+			fmt.Fprintln(c.App.ErrWriter, s)
+			time.Sleep(time.Second)
+			putArgs.Reader, err = fh.Open()
+			if isTimeout(e) {
+				putArgs.BaseParams.Client.Timeout = longClientTimeout
+			}
+		}
+	}
 	if progress != nil {
 		progress.Wait()
 	}
+
 	return err
 }
 

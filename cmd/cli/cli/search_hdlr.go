@@ -16,6 +16,11 @@ import (
 	"github.com/urfave/cli"
 )
 
+const searchUsage = "search " + cliName + " commands, e.g.:\n" +
+	indent1 + "\t - 'ais search log' - commands containing 'log' subcommand\n" +
+	indent1 + "\t - 'ais search --regex log' - include all subcommands that contain 'log' substring\n" +
+	indent1 + "\t - 'ais search --regex \"\\blog\"' - slightly narrow the search to those commands that have 'log' on a word boundary, etc."
+
 var (
 	searchCmdFlags = []cli.Flag{
 		regexFlag,
@@ -47,6 +52,7 @@ var (
 		cmdAuthAdd:      {"register", "create"},
 		cmdStgCleanup:   {"remove", "delete", "evict"},
 		cmdDownload:     {"load", "populate", "copy", "cp"},
+		commandTLS:      {"x509", "X509", "X.509", "certificate", "https"},
 	}
 
 	// app state
@@ -58,11 +64,8 @@ var (
 func initSearch(app *cli.App) {
 	searchCommands = []cli.Command{
 		{
-			Name: commandSearch,
-			Usage: "search " + cliName + " commands, e.g.:\n" +
-				indent1 + "\t - 'ais search log' - commands containing 'log' subcommand\n" +
-				indent1 + "\t - 'ais search --regex log' - include all subcommands that contain 'log' substring\n" +
-				indent1 + "\t - 'ais search --regex \"\\blog\"' - slightly narrow the search to those that have 'log' on a word boundary, etc.",
+			Name:         commandSearch,
+			Usage:        searchUsage,
 			ArgsUsage:    searchArgument,
 			Action:       searchCmdHdlr,
 			Flags:        searchCmdFlags,

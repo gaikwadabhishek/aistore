@@ -175,7 +175,7 @@ func (poi *putOI) putObject() (ecode int, err error) {
 	if !poi.skipVC && !poi.coldGET && !poi.cksumToUse.IsEmpty() {
 		if poi.lom.EqCksum(poi.cksumToUse) {
 			if cmn.Rom.FastV(4, cos.SmoduleAIS) {
-				nlog.Infof("destination %s has identical %s: PUT is a no-op", poi.lom, poi.cksumToUse)
+				nlog.Infoln(poi.lom.String(), "has identical", poi.cksumToUse.String(), "- PUT is a no-op")
 			}
 			cos.DrainReader(poi.r)
 			return 0, nil
@@ -566,9 +566,6 @@ do:
 		if cs.IsOOS() {
 			return http.StatusInsufficientStorage, cs.Err()
 		}
-		if errN := cmn.ValidateObjName(goi.lom.ObjName); errN != nil {
-			return 0, errN
-		}
 	}
 
 	switch {
@@ -643,6 +640,7 @@ do:
 		}
 		goi.lom.SetAtimeUnix(goi.atime)
 
+		// upgrade rlock => wlock
 		if loaded, err = goi._coldLock(); err != nil {
 			return 0, err
 		}
@@ -708,8 +706,8 @@ fin:
 // done early to prevent multiple cold-readers duplicating network/disk operation and overwriting each other
 func (goi *getOI) _coldLock() (loaded bool, err error) {
 	var (
-		t, lom = goi.t, goi.lom
-		now    int64
+		lom = goi.lom
+		now int64
 	)
 outer:
 	for lom.UpgradeLock() {
@@ -723,7 +721,7 @@ outer:
 			now = mono.NanoTime()
 			fallthrough
 		case mono.Since(now) < max(cmn.Rom.CplaneOperation(), 2*time.Second):
-			nlog.Errorln(t.String()+": failed to load", lom.String(), err, "- retrying...")
+			nlog.Errorln("failed to load", lom.String(), "err:", err, "- retrying...")
 		default:
 			err = cmn.NewErrBusy("object", lom.Cname())
 			break outer
@@ -915,12 +913,12 @@ gfn:
 	ecErr := ec.ECM.RestoreObject(goi.lom)
 	if ecErr == nil {
 		ecErr = goi.lom.Load(true /*cache it*/, false /*locked*/) // TODO: optimize locking
-		debug.AssertNoErr(ecErr)
 		if ecErr == nil {
 			nlog.Infoln(goi.t.String(), "EC-recovered", goi.lom.Cname())
 			return
 		}
 		err = cmn.NewErrFailedTo(goi.t, "load EC-recovered", goi.lom.Cname(), ecErr)
+		nlog.Errorln(ecErr)
 	} else if ecErr != ec.ErrorECDisabled {
 		err = cmn.NewErrFailedTo(goi.t, "EC-recover", goi.lom.Cname(), ecErr)
 		if cmn.IsErrCapExceeded(ecErr) {
@@ -930,7 +928,9 @@ gfn:
 	}
 
 	if err != nil {
-		err = cmn.NewErrFailedTo(goi.t, "goi-restore-any", goi.lom.Cname(), err)
+		if _, ok := err.(*cmn.ErrFailedTo); !ok {
+			err = cmn.NewErrFailedTo(goi.t, "goi-restore-any", goi.lom.Cname(), err)
+		}
 	} else {
 		err = cos.NewErrNotFound(goi.t, goi.lom.Cname())
 	}
@@ -984,7 +984,7 @@ func (goi *getOI) getFromNeighbor(lom *core.LOM, tsi *meta.Snode) bool {
 	freePOI(poi)
 	if erp == nil {
 		if cmn.Rom.FastV(5, cos.SmoduleAIS) {
-			nlog.Infof("%s: gfn %s <= %s", goi.t, goi.lom, tsi)
+			nlog.Infoln(goi.t.String(), "gfn", goi.lom.String(), "<=", tsi.StringEx())
 		}
 		return true
 	}
@@ -1342,7 +1342,7 @@ func (a *apndOI) apnd(buf []byte) (packedHdl string, ecode int, err error) {
 		cos.NamedVal64{Name: stats.AppendLatency, Value: lat},
 	)
 	if cmn.Rom.FastV(4, cos.SmoduleAIS) {
-		nlog.Infof("APPEND %s: %s", a.lom, lat)
+		nlog.Infoln("APPEND", a.lom.String(), time.Duration(lat))
 	}
 	return
 }

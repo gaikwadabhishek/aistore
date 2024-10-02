@@ -624,7 +624,7 @@ func (h *htrun) _call(si *meta.Snode, bargs *bcastArgs, results *bcastResults) {
 	freeCargs(cargs)
 }
 
-const _callHdrLen = 5
+const lenhdr = 5
 
 func (h *htrun) call(args *callArgs, smap *smapX) (res *callResult) {
 	var (
@@ -686,7 +686,7 @@ func (h *htrun) call(args *callArgs, smap *smapX) (res *callResult) {
 
 	// req header
 	if args.req.Header == nil {
-		args.req.Header = make(http.Header, _callHdrLen)
+		args.req.Header = make(http.Header, lenhdr)
 	}
 	if smap.vstr != "" {
 		if smap.IsPrimary(h.si) {
@@ -1075,6 +1075,8 @@ func _checkAction(msg *apc.ActMsg, expectedActions ...string) (err error) {
 // common cplane cont-d
 //
 
+// see related "GET(what)" set of APIs: api/cluster and api/daemon
+// the enum itself in api/apc/query
 func (h *htrun) httpdaeget(w http.ResponseWriter, r *http.Request, query url.Values, htext htext) {
 	var (
 		body any
@@ -1128,8 +1130,10 @@ func (h *htrun) httpdaeget(w http.ResponseWriter, r *http.Request, query url.Val
 		daeStats := h.statsT.GetStatsV322()
 		ds.Tracker = daeStats.Tracker
 		body = ds
+	case apc.WhatCertificate: // (see also: daeLoadX509, cluLoadX509)
+		body = certloader.Props()
 	default:
-		h.writeErrf(w, r, "invalid GET /daemon request: unrecognized what=%s", what)
+		h.writeErrf(w, r, "invalid '%s' request: unrecognized 'what=%s' query", r.URL.Path, what)
 		return
 	}
 	h.writeJSON(w, r, body, "httpdaeget-"+what)
@@ -1391,25 +1395,8 @@ func (h *htrun) writeErrAct(w http.ResponseWriter, r *http.Request, action strin
 	cmn.FreeHterr(err)
 }
 
-func (h *htrun) writeErrActf(w http.ResponseWriter, r *http.Request, action string,
-	format string, a ...any) {
-	detail := fmt.Sprintf(format, a...)
-	err := cmn.InitErrHTTP(r, fmt.Errorf("invalid action %q: %s", action, detail), 0)
-	h.writeErr(w, r, err)
-	cmn.FreeHterr(err)
-}
-
-// also, validatePrefix
-func (h *htrun) isValidObjname(w http.ResponseWriter, r *http.Request, name string) bool {
-	if err := cmn.ValidateObjName(name); err != nil {
-		h.writeErr(w, r, err)
-		return false
-	}
-	return true
-}
-
 // health client
-func (h *htrun) reqHealth(si *meta.Snode, timeout time.Duration, query url.Values, smap *smapX) (b []byte, status int, err error) {
+func (h *htrun) reqHealth(si *meta.Snode, tout time.Duration, q url.Values, smap *smapX, retry bool) ([]byte, int, error) {
 	var (
 		path  = apc.URLPathHealth.S
 		url   = si.URL(cmn.NetIntraControl)
@@ -1417,14 +1404,33 @@ func (h *htrun) reqHealth(si *meta.Snode, timeout time.Duration, query url.Value
 	)
 	{
 		cargs.si = si
-		cargs.req = cmn.HreqArgs{Method: http.MethodGet, Base: url, Path: path, Query: query}
-		cargs.timeout = timeout
+		cargs.req = cmn.HreqArgs{Method: http.MethodGet, Base: url, Path: path, Query: q}
+		cargs.timeout = tout
 	}
 	res := h.call(cargs, smap)
-	b, status, err = res.bytes, res.status, res.err
-	freeCargs(cargs)
+	b, status, err := res.bytes, res.status, res.err
 	freeCR(res)
-	return
+
+	if err != nil && retry {
+		// [NOTE] retrying when:
+		// - about to remove node 'si' from the cluster map, or
+		// - about to elect a new primary;
+		// not checking `IsErrDNSLookup` and similar - ie., not trying to narrow down
+		// (compare w/ slow-keepalive)
+		if si.PubNet.Hostname != si.ControlNet.Hostname {
+			cargs.req.Base = si.URL(cmn.NetPublic)
+			nlog.Warningln("retrying via pub addr:", cargs.req.Base)
+			res = h.call(cargs, smap)
+			b, status, err = res.bytes, res.status, res.err
+			freeCR(res)
+			if err != nil {
+				nlog.Warningln(h.si.String(), "=>", si.StringEx(), "failed slow-ping retry:", err)
+			}
+		}
+	}
+
+	freeCargs(cargs)
+	return b, status, err
 }
 
 // - utilizes reqHealth (above) to discover a _better_ Smap, if exists
@@ -1449,7 +1455,13 @@ func (h *htrun) bcastHealth(smap *smapX, checkAll bool) (*cos.NodeStateInfo, int
 	if checkAll || (c.cnt < maxVerConfirmations && smap.CountActiveTs() > 0) {
 		h._bch(&c, smap, apc.Target)
 	}
-	nlog.Infoln(h.String()+":", c.maxNsti.String())
+
+	// log
+	b, err := jsoniter.MarshalIndent(c.maxNsti.Smap, "", "    ")
+	debug.AssertNoErr(err)
+	nlog.Infoln(string(b))
+	nlog.Infoln("flags:", c.maxNsti.Flags.String())
+
 	return c.maxNsti, c.cnt
 }
 
@@ -1825,7 +1837,7 @@ func (h *htrun) join(query url.Values, htext htext, contactURLs ...string) (res 
 	if daemon.EP != "" {
 		candidates = _addCan(daemon.EP, selfPublicURL.Host, selfIntraURL.Host, candidates)
 	}
-	primaryURL, psi := h.getPrimaryURLAndSI(nil, config)
+	_, primaryURL, psi := h._primus(nil, config)
 	candidates = _addCan(primaryURL, selfPublicURL.Host, selfIntraURL.Host, candidates)
 	if psi != nil {
 		candidates = _addCan(psi.URL(cmn.NetPublic), selfPublicURL.Host, selfIntraURL.Host, candidates)
@@ -1940,14 +1952,13 @@ func (h *htrun) regTo(url string, psi *meta.Snode, tout time.Duration, q url.Val
 }
 
 // (fast path: nodes => primary)
-func (h *htrun) fastKalive(smap *smapX, timeout time.Duration, ecActive bool) (pid string, hdr http.Header, err error) {
+func (h *htrun) fastKalive(smap *smapX, timeout time.Duration, ecActive bool) (string /*pid*/, http.Header, error) {
 	if nlog.Stopping() {
-		return "", hdr, h.errStopping()
+		return "", http.Header{}, h.errStopping()
 	}
 	debug.Assert(h.ClusterStarted())
 
-	primaryURL, psi := h.getPrimaryURLAndSI(smap, nil)
-	pid = psi.ID()
+	pid, primaryURL, psi := h._primus(smap, nil)
 
 	cargs := allocCargs()
 	{
@@ -1956,39 +1967,59 @@ func (h *htrun) fastKalive(smap *smapX, timeout time.Duration, ecActive bool) (p
 		cargs.timeout = timeout
 	}
 	if ecActive {
-		hdr := make(http.Header, _callHdrLen)
+		// (target => primary)
+		hdr := make(http.Header, lenhdr)
 		hdr.Set(apc.HdrActiveEC, "true")
 		cargs.req.Header = hdr
 	}
 
 	res := h.call(cargs, smap)
 	freeCargs(cargs)
-	err, hdr = res.err, res.header
+	err, hdr := res.err, res.header
 
 	freeCR(res)
 	return pid, hdr, err
 }
 
 // (slow path: nodes => primary)
-func (h *htrun) slowKalive(smap *smapX, htext htext, timeout time.Duration) (pid string, status int, err error) {
+func (h *htrun) slowKalive(smap *smapX, htext htext, timeout time.Duration) (string /*pid*/, int, error) {
 	if nlog.Stopping() {
 		return "", 0, h.errStopping()
 	}
-	primaryURL, psi := h.getPrimaryURLAndSI(smap, nil)
-	pid = psi.ID()
+	pid, primaryURL, psi := h._primus(smap, nil)
 
 	res := h.regTo(primaryURL, psi, timeout, nil, htext, true /*keepalive*/)
-	if res.err != nil {
-		if strings.Contains(res.err.Error(), ciePrefix) {
-			cos.ExitLog(res.err) // FATAL: cluster integrity error (cie)
-		}
-		status, err = res.status, res.err
+	if res.err == nil {
+		freeCR(res)
+		return pid, 0, nil
 	}
+
+	s := res.err.Error()
+	if strings.Contains(s, ciePrefix) {
+		cos.ExitLog(res.err) // FATAL: cluster integrity error (cie)
+	}
+
+	if psi == nil || pid == "" || psi.PubNet.Hostname == psi.ControlNet.Hostname {
+		status, err := res.status, res.err
+		freeCR(res)
+		return pid, status, err
+	}
+
+	// intermittent DNS failure? (compare with h.reqHealth)
+	if psi.PubNet.Hostname != psi.ControlNet.Hostname {
+		primaryURL = psi.URL(cmn.NetPublic)
+		nlog.Warningln("retrying via pub addr", primaryURL, "[", s, pid, "]")
+
+		freeCR(res)
+		res = h.regTo(primaryURL, psi, timeout, nil, htext, true /*keepalive*/)
+	}
+
+	status, err := res.status, res.err
 	freeCR(res)
 	return pid, status, err
 }
 
-func (h *htrun) getPrimaryURLAndSI(smap *smapX, config *cmn.Config) (string, *meta.Snode) {
+func (h *htrun) _primus(smap *smapX, config *cmn.Config) (string /*pid*/, string /*url*/, *meta.Snode) {
 	if smap == nil {
 		smap = h.owner.smap.get()
 	}
@@ -1996,9 +2027,9 @@ func (h *htrun) getPrimaryURLAndSI(smap *smapX, config *cmn.Config) (string, *me
 		if config == nil {
 			config = cmn.GCO.Get()
 		}
-		return config.Proxy.PrimaryURL, nil
+		return "", config.Proxy.PrimaryURL, nil
 	}
-	return smap.Primary.URL(cmn.NetIntraControl), smap.Primary
+	return smap.Primary.ID(), smap.Primary.URL(cmn.NetIntraControl), smap.Primary
 }
 
 func (h *htrun) pollClusterStarted(config *cmn.Config, psi *meta.Snode) (maxNsti *cos.NodeStateInfo) {
@@ -2023,7 +2054,7 @@ func (h *htrun) pollClusterStarted(config *cmn.Config, psi *meta.Snode) (maxNsti
 			nlog.Warningln(h.String(), "started as a non-primary and got _elected_ during startup")
 			return
 		}
-		if _, _, err := h.reqHealth(smap.Primary, healthTimeout, query /*ask primary*/, smap); err == nil {
+		if _, _, err := h.reqHealth(smap.Primary, healthTimeout, query /*ask primary*/, smap, false /*retry pub-addr*/); err == nil {
 			// log
 			s := fmt.Sprintf("%s via primary health: cluster startup Ok, %s", h.si, smap.StringEx())
 			if self := smap.GetNode(h.si.ID()); self == nil {
@@ -2101,11 +2132,13 @@ func (h *htrun) rmSelf(smap *smapX, ignoreErr bool) error {
 func (h *htrun) externalWD(w http.ResponseWriter, r *http.Request) (responded bool) {
 	callerID := r.Header.Get(apc.HdrCallerID)
 	caller := r.Header.Get(apc.HdrCallerName)
+
 	// external call
 	if callerID == "" && caller == "" {
+		// TODO: check receiving on PubNet
 		readiness := cos.IsParseBool(r.URL.Query().Get(apc.QparamHealthReadiness))
 		if cmn.Rom.FastV(5, cos.SmoduleAIS) {
-			nlog.Infof("%s: external health-ping from %s (readiness=%t)", h.si, r.RemoteAddr, readiness)
+			nlog.Infoln(h.String(), "external health-ping from:", r.RemoteAddr, "readiness:", readiness)
 		}
 		// respond with 503 as per https://tools.ietf.org/html/rfc7231#section-6.6.4
 		// see also:
@@ -2113,11 +2146,16 @@ func (h *htrun) externalWD(w http.ResponseWriter, r *http.Request) (responded bo
 		if !readiness && !h.ClusterStarted() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		// NOTE: for "readiness" check always return true; otherwise, true if cluster started
+		// NOTE: for "readiness" always return true (otherwise, true if cluster-started)
 		return true
 	}
+
 	// intra-cluster health ping
-	if !h.ensureIntraControl(w, r, false /* from primary */) {
+	// - pub addr permitted (see reqHealth)
+	// - compare w/ h.ensureIntraControl
+	err := h.isIntraCall(r.Header, false /* from primary */)
+	if err != nil {
+		h.writeErr(w, r, err)
 		responded = true
 	}
 	return

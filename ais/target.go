@@ -6,9 +6,7 @@ package ais
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -116,18 +114,16 @@ func (t *target) initBackends(tstats *stats.Trunner) {
 		}
 	}
 
-	if err := t._initBuiltTagged(tstats); err != nil {
+	if err := t._initBuiltTagged(tstats, config); err != nil {
 		cos.ExitLog(err)
 	}
 }
 
 // - remote (e.g. cloud) backends  w/ empty stubs unless populated via build tags
 // - enabled/disabled via config.Backend
-func (t *target) _initBuiltTagged(tstats *stats.Trunner) error {
-	var (
-		enabled, disabled, notlinked []string
-		config                       = cmn.GCO.Get()
-	)
+func (t *target) _initBuiltTagged(tstats *stats.Trunner, config *cmn.Config) error {
+	var enabled, disabled, notlinked []string
+
 	for provider := range apc.Providers {
 		var (
 			add core.Backend
@@ -157,24 +153,35 @@ func (t *target) _initBuiltTagged(tstats *stats.Trunner) error {
 			disabled = append(disabled, provider)
 		case err != nil && configured:
 			notlinked = append(notlinked, provider)
+		case err != nil && !configured:
+			_, ok := err.(*cmn.ErrInitBackend) // error type to indicate a _mock_ backend
+			if !ok {
+				return fmt.Errorf("%s: failed to initialize [%s] backend, err: %v", t, provider, err)
+			}
 		}
 	}
-	const c = "configured but missing in the build"
+
+	var (
+		ln = len(notlinked)
+		ld = len(disabled)
+		le = len(enabled)
+	)
 	switch {
-	case len(notlinked) > 0:
-		s := fmt.Sprintf("%s: %v backends are "+c, t, notlinked)
-		if len(notlinked) == 1 {
-			s = fmt.Sprintf("%s: %s backend is "+c, t, notlinked[0])
+	case ln > 0:
+		err := fmt.Errorf("%s backend%s: %v configured but missing in the build", t, cos.Plural(ln), notlinked)
+		if le > 0 || ld > 0 {
+			err = fmt.Errorf("%v (enabled: %v, disabled: %v)", err, enabled, disabled)
 		}
-		if len(enabled) == 0 && len(disabled) == 0 {
-			return errors.New(s)
-		}
-		return fmt.Errorf("%s (enabled %v, disabled %v)", s, enabled, disabled)
-	case len(disabled) > 0:
-		nlog.Warningf("%s some backends are disabled via configuration: (enabled %v, disabled %v)", t, enabled, disabled)
+		return err
+	case ld > 0:
+		nlog.Warningf("%s backend%s: %v present in the build but disabled via (or not present in) the configuration",
+			t, cos.Plural(ld), disabled)
+	case le == 0:
+		nlog.Infoln(t.String(), "backends: none")
 	default:
 		nlog.Infoln(t.String(), "backends:", enabled)
 	}
+
 	return nil
 }
 
@@ -437,7 +444,7 @@ func (t *target) goresilver(interrupted bool) {
 	if interrupted {
 		nlog.Infoln("Resuming resilver...")
 	} else if daemon.resilver.required {
-		nlog.Infof("Starting resilver, reason: %q", daemon.resilver.reason)
+		nlog.Infoln("Starting resilver, reason:", daemon.resilver.reason)
 	}
 	t.runResilver(res.Args{}, nil /*wg*/)
 }
@@ -485,7 +492,7 @@ func (t *target) initRecvHandlers() {
 		{r: apc.Metasync, h: t.metasyncHandler, net: accessNetIntraControl},
 		{r: apc.Health, h: t.healthHandler, net: accessNetPublicControl},
 		{r: apc.Xactions, h: t.xactHandler, net: accessNetIntraControl},
-		{r: apc.EC, h: t.ecHandler, net: accessNetIntraData},
+		{r: apc.EC, h: t.ecHandler, net: accessNetIntraControl},
 		{r: apc.Vote, h: t.voteHandler, net: accessNetIntraControl},
 		{r: apc.Txn, h: t.txnHandler, net: accessNetIntraControl},
 		{r: apc.ObjStream, h: transport.RxAnyStream, net: accessControlData},
@@ -636,17 +643,6 @@ func (t *target) objectHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		cmn.WriteErr405(w, r, http.MethodDelete, http.MethodGet, http.MethodHead,
 			http.MethodPost, http.MethodPut)
-	}
-}
-
-// verb /v1/slices
-// Non-public inerface
-func (t *target) ecHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		t.httpecget(w, r)
-	default:
-		cmn.WriteErr405(w, r, http.MethodGet)
 	}
 }
 
@@ -813,9 +809,6 @@ func (t *target) httpobjput(w http.ResponseWriter, r *http.Request, apireq *apiR
 		started = time.Now().UnixNano()
 		t2tput  = isT2TPut(r.Header)
 	)
-	if !t.isValidObjname(w, r, lom.ObjName) {
-		return
-	}
 	if apireq.dpq.ptime == "" && !t2tput {
 		t.writeErrf(w, r, "%s: %s(obj) is expected to be redirected or replicated", t.si, r.Method)
 		return
@@ -918,9 +911,6 @@ func (t *target) httpobjdelete(w http.ResponseWriter, r *http.Request, apireq *a
 		return
 	}
 	objName := apireq.items[1]
-	if !t.isValidObjname(w, r, objName) {
-		return
-	}
 	if isRedirect(apireq.query) == "" {
 		t.writeErrf(w, r, "%s: %s(obj) is expected to be redirected", t.si, r.Method)
 		return
@@ -979,6 +969,7 @@ func (t *target) httpobjpost(w http.ResponseWriter, r *http.Request, apireq *api
 			t.statsT.IncErr(stats.ErrRenameCount)
 		}
 	case apc.ActBlobDl:
+		// TODO: add stats.GetBlobCount and *ErrCount
 		var (
 			xid     string
 			objName = msg.Name
@@ -1179,6 +1170,7 @@ func (t *target) httpobjpatch(w http.ResponseWriter, r *http.Request, apireq *ap
 			return
 		}
 	}
+
 	msg, err := t.readActionMsg(w, r)
 	if err != nil {
 		return
@@ -1188,11 +1180,9 @@ func (t *target) httpobjpatch(w http.ResponseWriter, r *http.Request, apireq *ap
 		t.writeErrf(w, r, cmn.FmtErrMorphUnmarshal, t.si, "set-custom", msg.Value, err)
 		return
 	}
+
 	lom := core.AllocLOM(apireq.items[1] /*objName*/)
 	defer core.FreeLOM(lom)
-	if !t.isValidObjname(w, r, lom.ObjName) {
-		return
-	}
 	if err := lom.InitBck(apireq.bck.Bucket()); err != nil {
 		t.writeErr(w, r, err)
 		return
@@ -1214,85 +1204,6 @@ func (t *target) httpobjpatch(w http.ResponseWriter, r *http.Request, apireq *ap
 		}
 	}
 	lom.Persist()
-}
-
-//
-// httpec* handlers
-//
-
-// Returns a slice. Does not use GFN.
-func (t *target) httpecget(w http.ResponseWriter, r *http.Request) {
-	apireq := apiReqAlloc(3, apc.URLPathEC.L, false)
-	apireq.bckIdx = 1
-	if err := t.parseReq(w, r, apireq); err != nil {
-		apiReqFree(apireq)
-		return
-	}
-	switch apireq.items[0] {
-	case ec.URLMeta:
-		t.sendECMetafile(w, r, apireq.bck, apireq.items[2])
-	case ec.URLCT:
-		lom := core.AllocLOM(apireq.items[2])
-		t.sendECCT(w, r, apireq.bck, lom)
-		core.FreeLOM(lom)
-	default:
-		t.writeErrURL(w, r)
-	}
-	apiReqFree(apireq)
-}
-
-// Returns a CT's metadata.
-func (t *target) sendECMetafile(w http.ResponseWriter, r *http.Request, bck *meta.Bck, objName string) {
-	if err := bck.Init(t.owner.bmd); err != nil {
-		if !cmn.IsErrRemoteBckNotFound(err) { // is ais
-			t.writeErr(w, r, err, Silent)
-			return
-		}
-	}
-	md, err := ec.ObjectMetadata(bck, objName)
-	if err != nil {
-		if os.IsNotExist(err) {
-			t.writeErr(w, r, err, http.StatusNotFound, Silent)
-		} else {
-			t.writeErr(w, r, err, http.StatusInternalServerError, Silent)
-		}
-		return
-	}
-	b := md.NewPack()
-	w.Header().Set(cos.HdrContentLength, strconv.Itoa(len(b)))
-	w.Write(b)
-}
-
-func (t *target) sendECCT(w http.ResponseWriter, r *http.Request, bck *meta.Bck, lom *core.LOM) {
-	if err := lom.InitBck(bck.Bucket()); err != nil {
-		if cmn.IsErrRemoteBckNotFound(err) {
-			t.BMDVersionFixup(r)
-			err = lom.InitBck(bck.Bucket())
-		}
-		if err != nil {
-			t.writeErr(w, r, err)
-			return
-		}
-	}
-	sliceFQN := lom.Mountpath().MakePathFQN(bck.Bucket(), fs.ECSliceType, lom.ObjName)
-	finfo, err := os.Stat(sliceFQN)
-	if err != nil {
-		t.writeErr(w, r, err, http.StatusNotFound, Silent)
-		return
-	}
-	file, err := os.Open(sliceFQN)
-	if err != nil {
-		t.FSHC(err, lom.Mountpath(), sliceFQN)
-		t.writeErr(w, r, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set(cos.HdrContentLength, strconv.FormatInt(finfo.Size(), 10))
-	_, err = io.Copy(w, file) // No need for `io.CopyBuffer` as `sendfile` syscall will be used.
-	cos.Close(file)
-	if err != nil {
-		nlog.Errorf("Failed to send slice %s: %v", lom.Cname(), err)
-	}
 }
 
 // called under lock
@@ -1362,16 +1273,24 @@ func (t *target) DeleteObject(lom *core.LOM, evict bool) (code int, err error) {
 			code, err = t.Backend(lom.Bck()).DeleteObj(lom)
 		}
 	}
-	if err == nil {
+
+	// stats
+	switch {
+	case err == nil:
 		t.statsT.Inc(stats.DeleteCount)
-	} else {
-		// TODO: count GET/PUT/DELETE remote errors on a per-backend...
+	case cos.IsNotExist(err, code) || cmn.IsErrObjNought(err):
+		if !evict {
+			t.statsT.IncErr(stats.ErrDeleteCount) // TODO: count GET/PUT/DELETE remote errors on a per-backend...
+		}
+	default:
+		// not to confuse with `stats.RemoteDeletedDelCount` that counts against
+		// QparamLatestVer, 'versioning.validate_warm_get' and friends
 		t.statsT.IncErr(stats.ErrDeleteCount)
 		if !isback {
 			t.statsT.IncErr(stats.IOErrDeleteCount)
 		}
 	}
-	return
+	return code, err
 }
 
 func (t *target) delobj(lom *core.LOM, evict bool) (int, error, bool) {

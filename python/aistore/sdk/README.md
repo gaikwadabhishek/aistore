@@ -6,7 +6,7 @@ The project is, essentially, a Python port of the [AIS Go APIs](https://aistore.
 
 The SDK also includes the `authn` sub-package for managing authentication, users, roles, clusters, and tokens. For more details, refer to the [AuthN sub-package README](https://github.com/NVIDIA/aistore/blob/main/python/aistore/sdk/authn/README.md).
 
-> Only Python 3.x (version 3.6 or later) is currently supported.
+> Support is currently limited to Python 3.x, with a minimum requirement of version 3.8 or later.
 
 ---
 
@@ -35,9 +35,9 @@ $ git clone https://github.com/NVIDIA/aistore.git
 $ cd aistore/python/
 
 # upgrade pip to latest version
-$ python -m pip install --upgrade pip       
+$ python -m pip install --upgrade pip
 
-# install dependencies 
+# install dependencies
 $ pip install -r aistore/common_requirements
 
 $ pip install -e .
@@ -53,6 +53,8 @@ from aistore.sdk import Client
 
 client = Client("http://localhost:8080")
 ```
+
+> Note: `http://localhost:8080` address (above and elsewhere) must be understood as a placeholder for an _arbitrary_ AIStore endpoint (`AIS_ENDPOINT`).
 
 The newly created `client` object can be used to interact with your AIS cluster, buckets, and objects. 
 See the [examples](https://github.com/NVIDIA/aistore/blob/main/python/examples/sdk) and the [reference docs](https://aistore.nvidia.com/docs/python-sdk) for more details

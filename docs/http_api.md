@@ -91,7 +91,9 @@ In particular, all API requests that operate on a bucket carry the bucket's spec
 
 > For developers and first-time users: if you deployed AIS locally having followed [these instructions](/README.md#local-non-containerized) then most likely you will have `http://localhost:8080` as the primary proxy, and generally, `http://localhost:808x` for all locally-deployed AIS daemons.
 
-> The reference below is "formulated" in `curl` - i.e., using `curl` command lines. It is possible, however, and often much easier (and, therefore, **preferable**), to execute the same operations using [AIS CLI](/docs/cli.md).
+> The reference below is "formulated" in [curl](https://curl.se/) - i.e., using `curl` command lines. It is possible, however, and often much easier (and, therefore, **preferable**), to execute the same operations using [AIS CLI](/docs/cli.md). For more `curl` examples, please also see:
+
+* [Assorted Curl](/docs/getting_started.md#assorted-curl)
 
 6. And finally, **HTTP request and response headers**
 
@@ -214,7 +216,7 @@ The operations that are limited in scope to a single specified node and that usu
 In this section, two quick `curl` examples. Notice response headers that show both the cluster and the responding node's respective uptimes (in nanoseconds):
 
 ```console
-$ curl -i http://localhost:8080//v1/health
+$ curl -i http://localhost:8080/v1/health
 HTTP/1.1 200 OK
 Ais-Cluster-Uptime: 295433144686
 Ais-Node-Uptime: 310453738871
@@ -222,10 +224,12 @@ Date: Tue, 08 Nov 2022 14:11:57 GMT
 Content-Length: 0
 ```
 
+> Note: `http://localhost:8080` address (above and elsewhere) must be understood as a placeholder for an _arbitrary_ AIStore endpoint (`AIS_ENDPOINT`).
+
 And here's a health probe executed during cluster startup:
 
 ```console
-$ curl -i http://localhost:8080//v1/health?prr=true
+$ curl -i http://localhost:8080/v1/health?prr=true
 HTTP/1.1 503 Service Unavailable
 Ais-Cluster-Uptime: 5578879646
 Ais-Node-Uptime: 20603416072

@@ -328,7 +328,6 @@ In the `DEFAULT` column above hyphen (`-`) indicates that the corresponding valu
 - [Enabling HTTPS](#enabling-https)
 - [Filesystem Health Checker](#filesystem-health-checker)
 - [Networking](#networking)
-- [Reverse proxy](#reverse-proxy)
 - [Curl examples](#curl-examples)
 - [CLI examples](#cli-examples)
 
@@ -534,7 +533,7 @@ If extended attributes are disabled globally when deploying a cluster, node IDs 
 
 ## Enabling HTTPS
 
-To switch from HTTP protocol to an encrypted HTTPS, configure `net.http.use_https`=`true` and modify `net.http.server_crt` and `net.http.server_key` values so they point to your OpenSSL certificate and key files respectively (see [AIStore configuration](/deploy/dev/local/aisnode_config.sh)).
+To switch from HTTP protocol to an encrypted HTTPS, configure `net.http.use_https`=`true` and modify `net.http.server_crt` and `net.http.server_key` values so they point to your TLS certificate and key files respectively (see [AIStore configuration](/deploy/dev/local/aisnode_config.sh)).
 
 The following HTTPS topics are also covered elsewhere:
 
@@ -608,10 +607,6 @@ Separately, there's a **multi-homing** capability motivated by the fact that tod
 ```
 
 No other changes. Just add the second NIC - second IPv4 addr `10.50.56.206` above, and that's all.
-
-## Reverse proxy
-
-AIStore gateway can act as a reverse proxy vis-à-vis AIStore storage targets. This functionality is limited to GET requests only and must be used with caution and consideration. Related [configuration variable](/deploy/dev/local/aisnode_config.sh) is called `rproxy` - see sub-section `http` of the section `net`. For further details, please refer to [this readme](rproxy.md).
 
 ## Curl examples
 

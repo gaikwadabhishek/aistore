@@ -43,7 +43,7 @@ type (
 	prefetch struct {
 		config *cmn.Config
 		msg    *apc.PrefetchMsg
-		lriterator
+		lrit
 		xact.Base
 		blob struct {
 			pending []core.Xact
@@ -89,7 +89,7 @@ func (*prfFactory) WhenPrevIsRunning(xreg.Renewable) (xreg.WPR, error) {
 func newPrefetch(xargs *xreg.Args, kind string, bck *meta.Bck, msg *apc.PrefetchMsg) (r *prefetch, err error) {
 	r = &prefetch{config: cmn.GCO.Get(), msg: msg}
 
-	err = r.lriterator.init(r, &msg.ListRange, bck)
+	err = r.lrit.init(r, &msg.ListRange, bck, msg.NumWorkers)
 	if err != nil {
 		return nil, err
 	}
@@ -103,12 +103,15 @@ func newPrefetch(xargs *xreg.Args, kind string, bck *meta.Bck, msg *apc.Prefetch
 }
 
 func (r *prefetch) Run(wg *sync.WaitGroup) {
+	nlog.Infoln(r.Name())
+
 	wg.Done()
-	err := r.lriterator.run(r, core.T.Sowner().Get())
+
+	err := r.lrit.run(r, core.T.Sowner().Get())
 	if err != nil {
 		r.AddErr(err, 5, cos.SmoduleXs) // duplicated?
 	}
-	r.lriterator.wait()
+	r.lrit.wait()
 
 	// pending blob-downloads
 	if r.blob.num.Load() > 0 {
@@ -124,7 +127,7 @@ func (r *prefetch) Run(wg *sync.WaitGroup) {
 	r.Finish()
 }
 
-func (r *prefetch) do(lom *core.LOM, lrit *lriterator) {
+func (r *prefetch) do(lom *core.LOM, lrit *lrit) {
 	var (
 		err   error
 		size  int64

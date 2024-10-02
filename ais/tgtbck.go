@@ -389,9 +389,10 @@ func (t *target) httpbckdelete(w http.ResponseWriter, r *http.Request, apireq *a
 			t.writeErrf(w, r, cmn.FmtErrMorphUnmarshal, t.si, msg.Action, msg.Value, err)
 			return
 		}
-		// note extra safety check
+		// extra safety check
 		for _, name := range lrMsg.ObjNames {
-			if !t.isValidObjname(w, r, name) {
+			if err := cmn.ValidateOname(name); err != nil {
+				t.writeErr(w, r, err)
 				return
 			}
 		}
@@ -486,7 +487,7 @@ func (t *target) httpbckhead(w http.ResponseWriter, r *http.Request, apireq *api
 	}
 	if cmn.Rom.FastV(5, cos.SmoduleAIS) {
 		pid := apireq.query.Get(apc.QparamProxyID)
-		nlog.Infof("%s %s <= %s", r.Method, apireq.bck, pid)
+		nlog.Infoln(r.Method, apireq.bck, "<=", pid)
 	}
 
 	debug.Assert(!apireq.bck.IsAIS())

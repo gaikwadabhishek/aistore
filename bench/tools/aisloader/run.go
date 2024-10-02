@@ -274,7 +274,10 @@ func Start(version, buildtime string) (err error) {
 			return fmt.Errorf("failed to get cluster map: %v", err)
 		}
 	}
-	loggedUserToken = authn.LoadToken(runParams.tokenFile)
+	loggedUserToken, err = authn.LoadToken(runParams.tokenFile)
+	if err != nil && runParams.tokenFile != "" {
+		return err
+	}
 	runParams.bp.Token = loggedUserToken
 	runParams.bp.UA = ua
 
@@ -351,7 +354,7 @@ func Start(version, buildtime string) (err error) {
 	// empty config to use memsys constants;
 	// alternatively: "memsys": { "min_free": "2gb", ... }
 	hk.Init()
-	go hk.DefaultHK.Run()
+	go hk.HK.Run()
 	hk.WaitStarted()
 
 	config := &cmn.Config{}

@@ -1,6 +1,6 @@
 // Package ec provides erasure coding (EC) based data protection for AIStore.
 /*
- * Copyright (c) 2018-2023, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2018-2024, NVIDIA CORPORATION. All rights reserved.
  */
 package ec
 
@@ -47,16 +47,20 @@ var (
 	errSkipped = errors.New("skipped") // CT is skipped due to EC unsupported for the content type
 )
 
-func initManager() (err error) {
+func initManager() error {
 	ECM = &Manager{
 		netReq:  cmn.NetIntraControl,
 		netResp: cmn.NetIntraData,
 		bmd:     core.T.Bowner().Get(),
 	}
-	if ECM.bmd.IsECUsed() {
-		err = ECM.initECBundles()
+	// EC `trnames` (ReqStreamName, RespStreamName) are constants, receive handlers static
+	if err := transport.Handle(ReqStreamName, ECM.recvRequest); err != nil {
+		return fmt.Errorf("failed to register recvRequest: %v", err)
 	}
-	return err
+	if err := transport.Handle(RespStreamName, ECM.recvResponse); err != nil {
+		return fmt.Errorf("failed to register respResponse: %v", err)
+	}
+	return nil
 }
 
 func (mgr *Manager) req() *bundle.Streams  { return mgr.reqBundle.Load() }
@@ -66,6 +70,7 @@ func (mgr *Manager) IsActive() bool { return mgr._refc.Load() != 0 }
 
 func (mgr *Manager) incActive(xctn core.Xact) {
 	mgr._refc.Inc()
+	mgr.OpenStreams(false)
 	notif := &xact.NotifXact{
 		Base: nl.Base{When: core.UponTerm, F: mgr.notifyTerm},
 		Xact: xctn,
@@ -78,21 +83,20 @@ func (mgr *Manager) notifyTerm(core.Notif, error, bool) {
 	debug.Assert(rc >= 0, "rc: ", rc)
 }
 
-func (mgr *Manager) initECBundles() error {
+func cbReq(hdr *transport.ObjHdr, _ io.ReadCloser, _ any, err error) {
+	if err != nil {
+		nlog.Errorln("failed to request", hdr.Cname(), "err: [", err, "]")
+	}
+}
+
+func (mgr *Manager) OpenStreams(withRefc bool) {
+	if withRefc {
+		mgr._refc.Inc()
+	}
 	if !mgr.bundleEnabled.CAS(false, true) {
-		return nil
+		return
 	}
-	if err := transport.Handle(ReqStreamName, ECM.recvRequest); err != nil {
-		return fmt.Errorf("failed to register recvRequest: %v", err)
-	}
-	if err := transport.Handle(RespStreamName, ECM.recvResponse); err != nil {
-		return fmt.Errorf("failed to register respResponse: %v", err)
-	}
-	cbReq := func(hdr *transport.ObjHdr, _ io.ReadCloser, _ any, err error) {
-		if err != nil {
-			nlog.Errorf("failed to request %s: %v", hdr.Cname(), err)
-		}
-	}
+	nlog.InfoDepth(1, core.T.String(), "ECM", apc.ActEcOpen)
 	var (
 		client      = transport.NewIntraDataClient()
 		config      = cmn.GCO.Get()
@@ -114,18 +118,19 @@ func (mgr *Manager) initECBundles() error {
 
 	mgr.reqBundle.Store(bundle.New(client, reqSbArgs))
 	mgr.respBundle.Store(bundle.New(client, respSbArgs))
-
-	return nil
 }
 
-func (mgr *Manager) closeECBundles() {
+func (mgr *Manager) CloseStreams(justRefc bool) {
+	if justRefc {
+		mgr._refc.Dec()
+		return
+	}
 	if !mgr.bundleEnabled.CAS(true, false) {
 		return
 	}
+	nlog.InfoDepth(1, core.T.String(), "ECM", apc.ActEcClose)
 	mgr.req().Close(false)
 	mgr.resp().Close(false)
-	transport.Unhandle(ReqStreamName)
-	transport.Unhandle(RespStreamName)
 }
 
 func (mgr *Manager) NewGetXact(bck *cmn.Bck) *XactGet         { return newGetXact(bck, mgr) }
@@ -196,7 +201,8 @@ func (mgr *Manager) recvRequest(hdr *transport.ObjHdr, objReader io.Reader, err 
 			return err
 		}
 	}
-	mgr.RestoreBckRespXact(bck).DispatchReq(iReq, hdr, bck)
+	xctn := mgr.RestoreBckRespXact(bck)
+	xctn.dispatchReq(iReq, hdr, bck)
 	return nil
 }
 
@@ -221,19 +227,23 @@ func (mgr *Manager) recvResponse(hdr *transport.ObjHdr, objReader io.Reader, err
 		return err
 	}
 	bck := meta.CloneBck(&hdr.Bck)
-	if err = bck.Init(core.T.Bowner()); err != nil {
-		if _, ok := err.(*cmn.ErrRemoteBckNotFound); !ok { // is ais
+	if err := bck.Init(core.T.Bowner()); err != nil {
+		if !cmn.IsErrRemoteBckNotFound(err) { // is ais://
 			nlog.Errorln(err)
 			return err
 		}
 	}
 	switch hdr.Opcode {
 	case reqPut:
-		mgr.RestoreBckRespXact(bck).DispatchResp(iReq, hdr, objReader)
+		xctn := mgr.RestoreBckRespXact(bck)
+		xctn.IncPending()
+		xctn.dispatchResp(iReq, hdr, objReader)
+		xctn.DecPending()
 	case respPut:
 		// Process the request even if the number of targets is insufficient
 		// (might've started when we had enough)
-		mgr.RestoreBckGetXact(bck).DispatchResp(iReq, hdr, bck, objReader)
+		xctn := mgr.RestoreBckGetXact(bck)
+		xctn.dispatchResp(iReq, hdr, bck, objReader)
 	default:
 		debug.Assertf(false, "unknown EC response action %d", hdr.Opcode)
 	}
@@ -318,16 +328,6 @@ func (mgr *Manager) BMDChanged() error {
 		return nil
 	}
 	mgr.bmd = newBMD
-
-	// globally
-	if newBMD.IsECUsed() && !oldBMD.IsECUsed() {
-		if err := mgr.initECBundles(); err != nil {
-			return err
-		}
-	} else if !newBMD.IsECUsed() && oldBMD.IsECUsed() {
-		mgr.closeECBundles()
-		return nil
-	}
 
 	// by bucket
 	newBMD.Range(nil, nil, func(nbck *meta.Bck) bool {

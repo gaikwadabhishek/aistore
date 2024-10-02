@@ -85,6 +85,7 @@ type (
 	}
 	ErrUnsupp struct {
 		action, what string
+		err          error
 	}
 	ErrNotImpl struct {
 		action, what string
@@ -224,6 +225,10 @@ type (
 	ErrInvalidObjName struct {
 		name string
 	}
+	ErrInvalidPrefix struct {
+		tag    string
+		prefix string
+	}
 	ErrNotRemoteBck struct {
 		act string
 		bck *Bck
@@ -261,7 +266,6 @@ func NewErrFailedTo(actor fmt.Stringer, action string, what any, err error, ecod
 	if e, ok := err.(*ErrFailedTo); ok {
 		return e
 	}
-	_clean(err)
 
 	e := &ErrFailedTo{action: action, what: what, err: err}
 	e.actor = thisNodeName
@@ -302,9 +306,13 @@ func IsErrStreamTerminated(err error) bool {
 
 // ErrUnsupp & ErrNotImpl
 
-func NewErrUnsupp(action, what string) *ErrUnsupp { return &ErrUnsupp{action, what} }
+func NewErrUnsupp(action, what string) *ErrUnsupp { return &ErrUnsupp{action: action, what: what} }
+func NewErrUnsuppErr(err error) *ErrUnsupp        { return &ErrUnsupp{err: err} }
 
 func (e *ErrUnsupp) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
 	return fmt.Sprintf("cannot %s %s - operation not supported", e.action, e.what)
 }
 
@@ -655,7 +663,7 @@ func IsErrXactNotFound(err error) bool {
 // ErrObjDefunct
 
 func (e *ErrObjDefunct) Error() string {
-	return fmt.Sprintf("%s is defunct (%d != %d)", e.name, e.d1, e.d2)
+	return fmt.Sprintf("%s is defunct (%x != %x)", e.name, e.d1, e.d2)
 }
 
 func NewErrObjDefunct(name string, d1, d2 uint64) *ErrObjDefunct {
@@ -673,7 +681,6 @@ func NewErrAborted(what, ctx string, err error) *ErrAborted {
 	if e, ok := err.(*ErrAborted); ok {
 		return e
 	}
-	_clean(err)
 	return &ErrAborted{what: what, ctx: ctx, err: err}
 }
 
@@ -859,17 +866,52 @@ func IsErrXactUsePrev(err error) bool {
 	return ok
 }
 
-// ErrInvalidObjName
+// ErrInvalidObjName, ErrInvalidPrefix
 
-func ValidateObjName(name string) (err *ErrInvalidObjName) {
-	if cos.IsLastB(name, filepath.Separator) || strings.Contains(name, "../") {
-		err = &ErrInvalidObjName{name}
+const (
+	inv1 = "../"
+	inv2 = "~/"
+)
+
+func ValidateOname(name string) (err *ErrInvalidObjName) {
+	if name == "" {
+		return &ErrInvalidObjName{name}
 	}
-	return err
+	return ValidOname(name)
+}
+
+func ValidOname(name string) *ErrInvalidObjName {
+	if cos.IsLastB(name, filepath.Separator) {
+		return &ErrInvalidObjName{name}
+	}
+	if strings.IndexByte(name, inv1[0]) < 0 && strings.IndexByte(name, inv2[0]) < 0 { // most of the time
+		return nil
+	}
+	if strings.Contains(name, inv1) || strings.Contains(name, inv2) {
+		return &ErrInvalidObjName{name}
+	}
+	return nil
 }
 
 func (e *ErrInvalidObjName) Error() string {
 	return fmt.Sprintf("invalid object name %q", e.name)
+}
+
+func ValidatePrefix(tag, prefix string) *ErrInvalidPrefix {
+	if prefix == "" {
+		return nil
+	}
+	if strings.IndexByte(prefix, inv1[0]) < 0 && strings.IndexByte(prefix, inv2[0]) < 0 { // ditto
+		return nil
+	}
+	if strings.Contains(prefix, inv1) || strings.Contains(prefix, inv2) {
+		return &ErrInvalidPrefix{tag, prefix}
+	}
+	return nil
+}
+
+func (e *ErrInvalidPrefix) Error() string {
+	return fmt.Sprintf("%s: invalid prefix %q", e.tag, e.prefix)
 }
 
 // ErrNotRemoteBck
