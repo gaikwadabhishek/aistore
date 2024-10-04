@@ -11,19 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-name: Links Checker
-
-on:
-  repository_dispatch:
-  workflow_dispatch:
-  schedule:
-    - cron: "00 12 * * 1"
-
-jobs:
-  linkChecker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
       - name: Create .lycheeignore file
         run: |
@@ -36,9 +23,3 @@ jobs:
         uses: lycheeverse/lychee-action@v1
         with:
           fail: true
-
-      - name: Link Checker
-        id: lychee
-        uses: lycheeverse/lychee-action@v1
-        with:
-            fail: true
