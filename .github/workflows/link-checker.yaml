@@ -11,6 +11,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+name: Links Checker
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+  schedule:
+    - cron: "00 12 * * 1"
+
+jobs:
+  linkChecker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .lycheeignore file
+        run: |
+          echo "https://a/b/c/imagenet/train-000000.tar" >> .lycheeignore
+          echo "https://a/b/c/imagenet/train-123456.tar" >> .lycheeignore
+          echo "https://a/b/c/imagenet/train-999999.tar" >> .lycheeignore
+
+      - name: Link Checker
+        id: lychee
+        uses: lycheeverse/lychee-action@v1
+        with:
+          fail: true
 
       - name: Link Checker
         id: lychee
