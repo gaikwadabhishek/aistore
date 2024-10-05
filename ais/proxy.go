@@ -1108,7 +1108,11 @@ func (p *proxy) healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// piggy-backing cluster info on health
 	if getCii {
-		debug.Assert(!prr)
+		if prr {
+			err := fmt.Errorf("invalid query parameters: %q (internal use only) and %q", apc.QparamClusterInfo, apc.QparamPrimaryReadyReb)
+			p.writeErr(w, r, err)
+			return
+		}
 		nsti := &cos.NodeStateInfo{}
 		p.fillNsti(nsti)
 		p.writeJSON(w, r, nsti, "cluster-info")
@@ -1125,7 +1129,7 @@ func (p *proxy) healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	callerID := r.Header.Get(apc.HdrCallerID)
-	if smap.GetProxy(callerID) != nil {
+	if callerID != "" && smap.GetProxy(callerID) != nil {
 		p.keepalive.heardFrom(callerID)
 	}
 
@@ -1150,10 +1154,16 @@ func (p *proxy) healthHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if prr || askPrimary {
-		caller := r.Header.Get(apc.HdrCallerName)
-		p.writeErrf(w, r, "%s (non-primary): misdirected health-of-primary request from %s, %s",
-			p, caller, smap.StringEx())
+	if prr {
+		if !p.forwardCP(w, r, nil /*msg*/, "health(prr)") {
+			// (unlikely)
+			p.writeErrMsg(w, r, "failing to forward health(prr) => primary", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	if askPrimary {
+		p.writeErrf(w, r, "%s (non-primary): misdirected health-of-primary request from %q, %s",
+			p, callerID, smap.StringEx())
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -2739,6 +2749,25 @@ func (p *proxy) httpdaeput(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+
+	// primary?
+	switch msg.Action {
+	case apc.ActStartMaintenance, apc.ActDecommissionCluster, apc.ActDecommissionNode, apc.ActShutdownNode, apc.ActShutdownCluster:
+		smap := p.owner.smap.get()
+		if !smap.isPrimary(p.si) {
+			break
+		}
+		if msg.Action == apc.ActShutdownCluster {
+			force := cos.IsParseBool(query.Get(apc.QparamForce))
+			if force {
+				break
+			}
+		}
+		err = fmt.Errorf("primary %s: invalid action %q (node-level operation on primary?), %s", p, msg.Action, smap.StringEx())
+		p.writeErr(w, r, err)
+		return
+	}
+
 	switch msg.Action {
 	case apc.ActSetConfig: // set-config #2 - via action message
 		p.setDaemonConfigMsg(w, r, msg, query)
@@ -2784,12 +2813,7 @@ func (p *proxy) httpdaeput(w http.ResponseWriter, r *http.Request) {
 			p.Stop(&errNoUnregister{msg.Action})
 			return
 		}
-		force := cos.IsParseBool(query.Get(apc.QparamForce))
-		if !force {
-			p.writeErrf(w, r, "cannot shutdown primary %s (consider %s=true option)",
-				p.si, apc.QparamForce)
-			return
-		}
+		// (see "force" above)
 		_ = syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	case apc.LoadX509:
 		p.daeLoadX509(w, r)
