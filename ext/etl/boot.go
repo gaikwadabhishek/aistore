@@ -20,6 +20,7 @@ import (
 	"github.com/NVIDIA/aistore/core"
 
 	corev1 "k8s.io/api/core/v1"
+	k8sresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -395,4 +396,81 @@ func (b *etlBootstrapper) _getTargetPodSpec() (*corev1.PodSpec, error) {
 		return nil, fmt.Errorf("failed to get target pod %q: %w", b.targetPodName, err)
 	}
 	return &targetPod.Spec, nil
+}
+
+// enforceResources applies cluster-level ETL resource defaults and rejects requests
+// that exceed the configured maximum limits (when the feature is enabled).
+func (b *etlBootstrapper) enforceResources() error {
+	etlConf := &b.config.ETL
+	if !etlConf.Enabled {
+		return nil
+	}
+
+	containers := b.pod.Spec.Containers
+	if len(containers) == 0 {
+		return nil
+	}
+	c := &containers[0]
+
+	// Apply defaults when not specified
+	if etlConf.DefaultCPU != "" {
+		q := k8sresource.MustParse(etlConf.DefaultCPU)
+		if _, ok := c.Resources.Requests[corev1.ResourceCPU]; !ok {
+			if c.Resources.Requests == nil {
+				c.Resources.Requests = make(corev1.ResourceList)
+			}
+			c.Resources.Requests[corev1.ResourceCPU] = q
+		}
+		if _, ok := c.Resources.Limits[corev1.ResourceCPU]; !ok {
+			if c.Resources.Limits == nil {
+				c.Resources.Limits = make(corev1.ResourceList)
+			}
+			c.Resources.Limits[corev1.ResourceCPU] = q
+		}
+	}
+	if etlConf.DefaultMemory != "" {
+		q := k8sresource.MustParse(etlConf.DefaultMemory)
+		if _, ok := c.Resources.Requests[corev1.ResourceMemory]; !ok {
+			if c.Resources.Requests == nil {
+				c.Resources.Requests = make(corev1.ResourceList)
+			}
+			c.Resources.Requests[corev1.ResourceMemory] = q
+		}
+		if _, ok := c.Resources.Limits[corev1.ResourceMemory]; !ok {
+			if c.Resources.Limits == nil {
+				c.Resources.Limits = make(corev1.ResourceList)
+			}
+			c.Resources.Limits[corev1.ResourceMemory] = q
+		}
+	}
+
+	// Enforce maximum limits
+	if etlConf.MaxCPU != "" {
+		maxCPU := k8sresource.MustParse(etlConf.MaxCPU)
+		if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+			if req.Cmp(maxCPU) > 0 {
+				return cmn.NewErrETLf(b.errCtx, "requested CPU %s exceeds cluster limit %s", req.String(), maxCPU.String())
+			}
+		}
+		if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+			if lim.Cmp(maxCPU) > 0 {
+				return cmn.NewErrETLf(b.errCtx, "CPU limit %s exceeds cluster limit %s", lim.String(), maxCPU.String())
+			}
+		}
+	}
+	if etlConf.MaxMemory != "" {
+		maxMem := k8sresource.MustParse(etlConf.MaxMemory)
+		if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+			if req.Cmp(maxMem) > 0 {
+				return cmn.NewErrETLf(b.errCtx, "requested memory %s exceeds cluster limit %s", req.String(), maxMem.String())
+			}
+		}
+		if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+			if lim.Cmp(maxMem) > 0 {
+				return cmn.NewErrETLf(b.errCtx, "memory limit %s exceeds cluster limit %s", lim.String(), maxMem.String())
+			}
+		}
+	}
+
+	return nil
 }
