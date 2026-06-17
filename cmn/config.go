@@ -103,6 +103,7 @@ type (
 		Ext         any             `json:"ext,omitempty"`              // reserved
 		Tracing     *TracingConf    `json:"tracing,omitempty"`          // see cmn/gco fixup; build tag
 		Dsort       *DsortConf      `json:"distributed_sort,omitempty"` // ditto; build tag
+		ETL         ETLConf         `json:"etl"`                        // cluster-level ETL resource defaults & limits
 		Auth        AuthConf        `json:"auth" allow:"cluster"`       // ditto
 		Backend     BackendConf     `json:"backend" allow:"cluster"`
 		WritePolicy WritePolicyConf `json:"write_policy"` // object metadata: (immediate | delayed | never)
@@ -162,6 +163,7 @@ type (
 		Keepalive   *KeepaliveConfToSet   `json:"keepalivetracker,omitempty"`
 		Downloader  *DownloaderConfToSet  `json:"downloader,omitempty"`
 		Dsort       *DsortConfToSet       `json:"distributed_sort,omitempty"`
+		ETL         *ETLConfToSet         `json:"etl,omitempty"`
 		Transport   *TransportConfToSet   `json:"transport,omitempty"`
 		Memsys      *MemsysConfToSet      `json:"memsys,omitempty"`
 		TCB         *TCBConfToSet         `json:"tcb,omitempty"`
@@ -376,6 +378,24 @@ type (
 	TraceExporterAuthConfToSet struct {
 		TokenHeader *string `json:"token_header,omitempty"` // header used to pass exporter auth token
 		TokenFile   *string `json:"token_file,omitempty"`   // filepath from where auth token can be obtained
+	}
+
+	// ETLConf defines cluster-level resource defaults and limits for ETL pods.
+	// When enabled, any ETL init request that omits resource specifications will
+	// have the defaults applied; requests that exceed the maximum limits are rejected.
+	ETLConf struct {
+		MaxCPU        string `json:"max_cpu,omitempty"`        // max CPU limit per ETL pod, e.g. "30" (cores)
+		MaxMemory     string `json:"max_memory,omitempty"`     // max memory limit per ETL pod, e.g. "10Gi"
+		DefaultCPU    string `json:"default_cpu,omitempty"`    // default CPU for ETL pod when not specified
+		DefaultMemory string `json:"default_memory,omitempty"` // default memory for ETL pod when not specified
+		Enabled       bool   `json:"enabled"`                  // feature toggle; disabled by default
+	}
+	ETLConfToSet struct {
+		MaxCPU        *string `json:"max_cpu,omitempty"`
+		MaxMemory     *string `json:"max_memory,omitempty"`
+		DefaultCPU    *string `json:"default_cpu,omitempty"`
+		DefaultMemory *string `json:"default_memory,omitempty"`
+		Enabled       *bool   `json:"enabled,omitempty"`
 	}
 
 	// NOTE: StatsTime is one important timer - a pulse
@@ -1156,6 +1176,7 @@ var (
 	_ validator = (*WritePolicyConf)(nil)
 	_ validator = (*TracingConf)(nil)
 	_ validator = (*GetBatchConf)(nil)
+	_ validator = (*ETLConf)(nil)
 
 	_ validator = (*feat.Flags)(nil) // is called explicitly from main config validator
 
@@ -2705,6 +2726,18 @@ func (c *TracingConf) Validate() error {
 			return nil
 		}
 		c.SamplerProbability = prob
+	}
+	return nil
+}
+
+func (c *ETLConf) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	// actual resource-quantity parsing/validation is done in ext/etl (K8s dependencies)
+	// here we only check that if max is set, default must not be empty and vice versa
+	if c.MaxCPU == "" && c.DefaultCPU == "" && c.MaxMemory == "" && c.DefaultMemory == "" {
+		return errors.New("etl: enabled but no resource limits or defaults configured")
 	}
 	return nil
 }
